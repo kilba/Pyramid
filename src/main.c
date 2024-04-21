@@ -9,26 +9,26 @@
 VkInstance instance;
 VkSurfaceKHR surface;
 
-VkPhysicalDeviceFeatures deviceFeatures = {0};
-VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+VkPhysicalDeviceFeatures device_features = {0};
+VkPhysicalDevice physical_device = VK_NULL_HANDLE;
 VkDevice device;
 
-VkQueue presentQueue;
+VkQueue present_queue;
 
 typedef struct {
-    uint32_t familyCount;
+    uint32_t family_count;
 
-    uint32_t graphicsFamily;
-    bool graphicsFamilyIsValid;
+    uint32_t graphics_family;
+    bool graphics_family_is_valid;
 
-    uint32_t presentFamily;
-    bool presentFamilyIsValid;
+    uint32_t present_family;
+    bool present_family_is_valid;
 } QueueFamilyIndices;
 
 WindowData wdata;
 
-bool enableValidationLayers = true;
-const char *validationLayers[] = {
+bool enable_validation_layers = true;
+const char *validation_layers[] = {
     "VK_LAYER_KHRONOS_validation"
 };
 
@@ -37,68 +37,73 @@ void tick() {
 
 QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
     QueueFamilyIndices indices;
-    indices.graphicsFamilyIsValid = false;
-    indices.presentFamilyIsValid = false;
-    indices.familyCount = 2;
+    indices.graphics_family_is_valid = false;
+    indices.present_family_is_valid = false;
+    indices.family_count = 2;
 
-    uint32_t familyCount;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, NULL);
+    uint32_t num_families;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &num_families, NULL);
 
-    VkQueueFamilyProperties queueFamilies[familyCount];
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, queueFamilies);
+    VkQueueFamilyProperties* queue_families = malloc(num_families * sizeof(VkQueueFamilyProperties));
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &num_families, queue_families);
 
-    for(int i = 0; i < familyCount; i++) {
-	if(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-	    indices.graphicsFamily = i;
-	    indices.graphicsFamilyIsValid = true;
-	}
+    for(int i = 0; i < num_families; i++) {
+        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            indices.graphics_family = i;
+            indices.present_family_is_valid = true;
+        }
 
-	VkBool32 presentSupport = false;
-	vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
-	if(presentSupport) {
-	    indices.presentFamily = i;
-	    indices.presentFamilyIsValid = true;
-	}
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+        if(presentSupport) {
+            indices.present_family = i;
+            indices.present_family_is_valid = true;
+        }
     }
+
+    free(queue_families);
 
     return indices;
 }
 
 bool isDeviceSuitable(VkPhysicalDevice device) {
     QueueFamilyIndices indices = findQueueFamilies(device);
-    return indices.graphicsFamilyIsValid && indices.presentFamilyIsValid;
+    return indices.present_family_is_valid && indices.present_family_is_valid;
 }
 
 bool checkValidationLayerSupport() {
-    uint32_t layerCount;
-    vkEnumerateInstanceLayerProperties(&layerCount, NULL);
+    uint32_t num_layers;
+    vkEnumerateInstanceLayerProperties(&num_layers, NULL);
 
-    VkLayerProperties availableLayers[layerCount];
-    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers);
+    VkLayerProperties* layers = malloc(num_layers * sizeof(VkLayerProperties));
+    vkEnumerateInstanceLayerProperties(&num_layers, layers);
 
-    int validationLayerCount = sizeof(validationLayers) / sizeof(const char *);
-    for(int i = 0; i < validationLayerCount; i++) {
-	bool layerFound = false;
+    int num_validation_layers = sizeof(validation_layers) / sizeof(const char *);
+    for(int i = 0; i < num_validation_layers; i++) {
+        bool layerFound = false;
 
-	for(int j = 0; j < layerCount; j++) {
-	    if(strcmp(validationLayers[i], availableLayers[j].layerName) == 0) {
-		layerFound = true;
-		break;
+        for(int j = 0; j < num_layers; j++) {
+            if(strcmp(validation_layers[i], layers[j].layerName) == 0) {
+                layerFound = true;
+                break;
+            }
 	    }
-	}
 
-	if(!layerFound)
-	    return false;
+        if(!layerFound) {
+            return false;
+        }
     }
+
+    free(layers);
 
     return true;
 }
 
 /* --- Initialization --- */
 void createInstance() {
-    if(enableValidationLayers && !checkValidationLayerSupport()) {
-	printf("The validation layers requested are not available!\n");
-	return;
+    if(enable_validation_layers && !checkValidationLayerSupport()) {
+        printf("The validation layers requested are not available!\n");
+        return;
     }
 
     VkApplicationInfo appInfo = {0};
@@ -111,8 +116,8 @@ void createInstance() {
 
     VkInstanceCreateInfo ci = {0};
     const char *extensions[] = {
-	"VK_KHR_surface",
-	"VK_KHR_win32_surface"
+        "VK_KHR_surface",
+        "VK_KHR_win32_surface"
     };
 
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -120,16 +125,16 @@ void createInstance() {
     ci.enabledExtensionCount = 2;
     ci.ppEnabledExtensionNames = extensions;
 
-    if(enableValidationLayers) {
-	ci.enabledLayerCount = sizeof(validationLayers) / sizeof(const char *);
-	ci.ppEnabledLayerNames = validationLayers;
+    if(enable_validation_layers) {
+        ci.enabledLayerCount = sizeof(validation_layers) / sizeof(const char *);
+        ci.ppEnabledLayerNames = validation_layers;
     } else {
-	ci.enabledLayerCount = 0;
+	    ci.enabledLayerCount = 0;
     }
 
     VkResult result = vkCreateInstance(&ci, NULL, &instance);
     if(result != VK_SUCCESS) {
-	printf("Instance creation failed\n");
+	    printf("Instance creation failed\n");
     }
 }
 
@@ -141,7 +146,7 @@ void createWindowSurface() {
 
     VkResult err = vkCreateWin32SurfaceKHR(instance, &ci, NULL, &surface);
     if(err != VK_SUCCESS) {
-	printf("Failed to create a window surface!\n");
+	    printf("Failed to create a window surface!\n");
     }
 }
 
@@ -149,81 +154,82 @@ void debugMessenger() {
 }
 
 void selectPhysicalDevice() {
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
-    if(deviceCount == 0) {
-	printf("No GPU with Vulkan support was found!\n");
+    uint32_t num_devices = 0;
+    vkEnumeratePhysicalDevices(instance, &num_devices, NULL);
+    if(num_devices == 0) {
+	    printf("No GPU with Vulkan support was found!\n");
+        exit(1);
     }
 
-    VkPhysicalDevice devices[deviceCount];
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices);
+    VkPhysicalDevice* devices = malloc(num_devices * sizeof(VkPhysicalDevice));
+    vkEnumeratePhysicalDevices(instance, &num_devices, devices);
 
-    for(int i = 0; i < deviceCount; i++) {
-	if(isDeviceSuitable(devices[i])) {
-	    physicalDevice = devices[i];
-	    break;
-	}
+    for(int i = 0; i < num_devices; i++) {
+        if(isDeviceSuitable(devices[i])) {
+            physical_device = devices[i];
+            break;
+        }
     }
 
-    if(physicalDevice == VK_NULL_HANDLE) {
-	printf("Failed to find a suitable GPU!\n");
-	return;
+    if(physical_device == VK_NULL_HANDLE) {
+        printf("Failed to find a suitable GPU!\n");
+        return;
     }
 }
 
 void createLogicalDevice() {
-    QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+    QueueFamilyIndices indices = findQueueFamilies(physical_device);
 
-    VkDeviceQueueCreateInfo queueCis[indices.familyCount];
-    uint32_t uniqueQueueFamilies[] = { indices.graphicsFamily, indices.presentFamily };
-    uint32_t uniqueFamilyCount = indices.familyCount;
+    VkDeviceQueueCreateInfo* queue_cis = malloc(indices.family_count * sizeof(VkDeviceQueueCreateInfo));
+    uint32_t uq_families[] = { indices.graphics_family, indices.present_family };
+    uint32_t num_uq_families = indices.family_count;
 
-    /* Remove Duplicates */
-    for(int i = 0; i < uniqueFamilyCount; i++){
-       for(int j = i + 1; j < uniqueFamilyCount; j++){
-	  if(uniqueQueueFamilies[i] == uniqueQueueFamilies[j]){
-	     for(int k = j; k < uniqueFamilyCount; k++) {
-		uniqueQueueFamilies[k] = uniqueQueueFamilies[k+1];
-	     }
+    // remove dupes
+    for(int i = 0; i < num_uq_families; i++){
+       for(int j = i + 1; j < num_uq_families; j++){
+            if(uq_families[i] == uq_families[j]){
+                for(int k = j; k < num_uq_families; k++) {
+                    uq_families[k] = uq_families[k + 1];
+                }
 
-	     j--;
-	     uniqueFamilyCount--;
-	  }
+                j--;
+                num_uq_families--;
+            }
        }
     }
 
     float queuePriority = 1.0;
-    for(int i = 0; i < uniqueFamilyCount; i++) {
-	VkDeviceQueueCreateInfo queueCi = {0};
-	queueCi.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-	queueCi.queueFamilyIndex = uniqueQueueFamilies[i];
-	queueCi.queueCount = 1;
-	queueCi.pQueuePriorities = &queuePriority;
+    for(int i = 0; i < num_uq_families; i++) {
+        VkDeviceQueueCreateInfo queue_ci = {0};
+        queue_ci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_ci.queueFamilyIndex = uq_families[i];
+        queue_ci.queueCount = 1;
+        queue_ci.pQueuePriorities = &queuePriority;
 
-	queueCis[i] = queueCi;
+        queue_cis[i] = queue_ci;
     }
 
     VkDeviceCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    ci.pQueueCreateInfos = queueCis;
-    ci.queueCreateInfoCount = uniqueFamilyCount;
-    ci.pEnabledFeatures = &deviceFeatures;
+    ci.pQueueCreateInfos = queue_cis;
+    ci.queueCreateInfoCount = num_uq_families;
+    ci.pEnabledFeatures = &device_features;
     ci.enabledExtensionCount = 0;
     
-    if(enableValidationLayers) {
-	ci.enabledLayerCount = sizeof(validationLayers) / sizeof(const char *);
-	ci.ppEnabledLayerNames = validationLayers;
+    if(enable_validation_layers) {
+        ci.enabledLayerCount = sizeof(validation_layers) / sizeof(const char *);
+        ci.ppEnabledLayerNames = validation_layers;
     } else {
-	ci.enabledLayerCount = 0;
+	    ci.enabledLayerCount = 0;
     }
 
-    VkResult err = vkCreateDevice(physicalDevice, &ci, NULL, &device);
+    VkResult err = vkCreateDevice(physical_device, &ci, NULL, &device);
     if(err != VK_SUCCESS) {
-	printf("Failed to create Logical Device!\n");
-	return;
+        printf("Failed to create Logical Device!\n");
+        return;
     }
 
-    vkGetDeviceQueue(device, indices.presentFamily, 0, &presentQueue);
+    vkGetDeviceQueue(device, indices.present_family, 0, &present_queue);
 }
 
 int main() {

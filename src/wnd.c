@@ -156,9 +156,7 @@ void bs_wndTick(void (*render)()) {
                 return;
             case WM_TIMER:
                 break;
-            /* Skip scene update on non-timed events */
-            default:
-                goto pass;
+            default: continue;
         }
 
         prev = elapsed;
@@ -170,8 +168,6 @@ void bs_wndTick(void (*render)()) {
 
         render();
         SwapBuffers(wd.dc);
-
-        pass:
     }
 }
 
