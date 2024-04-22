@@ -4,7 +4,10 @@
     <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\wnd.c">
+    <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\bs\bs_ini.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\bs\bs_math.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

@@ -1,6 +1,7 @@
 #include <stdio.h>
+#include <time.h>
+
 #define CGLTF_IMPLEMENTATION
-#include <cgltf/cgltf.h>
 #include <cglm/cglm.h>
 
 #include <stdint.h>
@@ -11,368 +12,695 @@
 #include <bs_models.h>
 #include <bs_shaders.h>
 #include <bs_textures.h>
+#include <bs_wnd.h>
+#include <bs_json.h>
 
-bs_Joint identity_joint = { GLM_MAT4_IDENTITY_INIT };
-bs_Anim *anims = NULL;
-int anim_count;
+bs_Buffer animation_buf;
+bs_Buffer armature_buf;
 
-int64_t curr_tex_ptr = 0;
-int attrib_offset = 0;
+bs_Space armature_shader_space;
 
-/* --- VERTEX LOADING --- */
-void bs_readPositionVertices(int accessor_index, bs_Prim *prim, bs_Mesh *mesh, cgltf_data *data) {	
-	int num_floats = cgltf_accessor_unpack_floats(&data->accessors[accessor_index], NULL, 0);
-	int num_comps = cgltf_num_components(data->accessors[accessor_index].type);
-
-	for(int i = 0; i < num_floats / num_comps; i++) {
-		cgltf_accessor_read_float(&data->accessors[accessor_index], i, &prim->vertices[i].position.x, num_comps);
-		vec3 *pos = (vec3*)&prim->vertices[i].position;
-		glm_mat4_mulv3(mesh->mat, *pos, 1.0, *pos);
-	}
+// Space Communication-
+void bs_pushModelBuffers() {
+    animation_buf = bs_buffer(0, sizeof(bs_Animation), 4, 32, 0);
+    armature_buf = bs_buffer(0, sizeof(bs_mat4), 64, 0, 0);
 }
 
-void bs_readNormalVertices(int accessor_index, bs_Prim *prim, bs_Mesh *mesh, cgltf_data *data) {
-	int num_floats = cgltf_accessor_unpack_floats(&data->accessors[accessor_index], NULL, 0);
-	int num_comps = cgltf_num_components(data->accessors[accessor_index].type);
+void bs_calculateArmaturePose(bs_Armature* armature, bs_Animation* animation, float time);
+void bs_updateArmature(bs_ArmatureStorage storage, bs_Animation* animation, float time) {
+    if (animation == NULL) {
+        return;
+    }
 
-	for(int i = 0; i < num_floats / num_comps; i++) {
-		cgltf_accessor_read_float(&data->accessors[accessor_index], i, &prim->vertices[i].normal.x, num_comps);
-	}
+    bs_calculateArmaturePose(storage.armature, animation, time);
+    bs_updateShaderSpace(&armature_shader_space, storage.armature->joint_matrices, storage.buffer_location, storage.armature->num_joints);
 }
 
-void bs_readTexCoordVertices(int accessor_index, bs_Prim *prim, cgltf_data *data) {
-    int num_floats = cgltf_accessor_unpack_floats(&data->accessors[accessor_index], NULL, 0);
-    int num_comps = cgltf_num_components(data->accessors[accessor_index].type);
+void bs_pushArmatures() {
+    armature_shader_space = bs_shaderSpace(armature_buf, BS_SPACE_ARMATURES, BS_STD430);
+}
+//-Space Communication
 
-    for(int i = 0; i < num_floats / num_comps; i++) {
-	cgltf_accessor_read_float(&data->accessors[accessor_index], i, &prim->vertices[i].tex_coord.x, num_comps);
-    }
+inline bs_mat4 bs_gltfMat4(bs_Gltf* gltf, int accessor, int i) {
+    int buffer_view = bs_jsonField(gltf->accessors.as_objects + accessor, "bufferView").as_int;
+    //int count = bs_jsonField(gltf->accessors.as_objects + accessor, "count").as_int;
 
-    if(prim->material.tex != NULL) {
-	float x_range = (float)prim->material.tex->w / 1024.0;
-	float y_range = (float)prim->material.tex->h / 1024.0;
+    bs_Json* buffer_view_ptr = gltf->buffer_views.as_objects + buffer_view;
+    int len = bs_jsonField(buffer_view_ptr, "byteLength").as_int;
+    int offset = bs_jsonField(buffer_view_ptr, "byteOffset").as_int;
 
-	for(int i = 0; i < num_floats; i+=2) {
-		prim->vertices[i/2].tex_coord.x = bs_fMap(prim->vertices[i/2].tex_coord.x, 0.0, 1.0, 0.0, x_range);
-		prim->vertices[i/2].tex_coord.y = bs_fMap(prim->vertices[i/2].tex_coord.y, 0.0, 1.0, 0.0, y_range);
-	}
-    }
+    bs_mat4 m = { 0 };
+    memcpy(m.a, gltf->buffer + offset + i * sizeof(bs_mat4), sizeof(bs_mat4));
+    return m;
 }
 
-void bs_readJointIndices(int accessor_index, bs_Prim *prim, cgltf_data *data) {
-	int num_ints = cgltf_accessor_unpack_floats(&data->accessors[accessor_index], NULL, 0);
-	int num_comps = cgltf_num_components(data->accessors[accessor_index].type);
+inline int* bs_gltfIntArray(bs_Gltf* gltf, int accessor, int* out_len, int num_components, bs_U32 size) {
+    int buffer_view = bs_jsonField(gltf->accessors.as_objects + accessor, "bufferView").as_int;
 
-	for(int i = 0; i < num_ints / num_comps; i++) {
-		unsigned int xyzw[4];
+    bs_Json* buffer_view_ptr = gltf->buffer_views.as_objects + buffer_view;
+    *out_len = bs_jsonField(buffer_view_ptr, "byteLength").as_int / size;
+    int offset = bs_jsonField(buffer_view_ptr, "byteOffset").as_int;
 
-		cgltf_accessor_read_uint(&data->accessors[accessor_index], i, xyzw, num_comps);
-		prim->vertices[i].bone_ids.x = xyzw[0];
-		prim->vertices[i].bone_ids.y = xyzw[1];
-		prim->vertices[i].bone_ids.z = xyzw[2];
-		prim->vertices[i].bone_ids.w = xyzw[3];
-	}
+    return (int*)(gltf->buffer + offset);
 }
 
-void bs_readWeights(int accessor_index, bs_Prim *prim, cgltf_data *data) {
-	int num_floats = cgltf_accessor_unpack_floats(&data->accessors[accessor_index], NULL, 0);
-	int num_comps = cgltf_num_components(data->accessors[accessor_index].type);
+inline float* bs_gltfFloatArray(bs_Gltf* gltf, int accessor, int* out_len, int num_components) {
+    int buffer_view = bs_jsonField(gltf->accessors.as_objects + accessor, "bufferView").as_int;
+    int count = bs_jsonField(gltf->accessors.as_objects + accessor, "count").as_int;
 
-	for(int i = 0; i < num_floats / num_comps; i++) {
-		cgltf_accessor_read_float(&data->accessors[accessor_index], i, &prim->vertices[i].weights.x, num_comps);
-	}
+    bs_Json* buffer_view_ptr = gltf->buffer_views.as_objects + buffer_view;
+    *out_len = count * num_components;
+    int offset = bs_jsonField(buffer_view_ptr, "byteOffset").as_int;
+
+    return (float*)(gltf->buffer + offset);
 }
 
-void bs_loadMaterial(bs_Model *model, cgltf_primitive *c_prim, bs_Prim *prim) {
-    cgltf_material *c_mat = c_prim->material;
-    bs_Material *mat = &prim->material;
-
-    if(c_mat == NULL) {
-	mat->col.r = 255;
-	mat->col.g = 255;
-	mat->col.b = 255;
-	mat->col.a = 255;
-	return;
+bs_quat bs_interpolateRotation(bs_Armature* armature, bs_AnimationJoint* animation_joint, float time) {
+    int index = 0;
+    for (; index < animation_joint->num_rotations; index++) {
+        if (animation_joint->rotations[index].time >= time) {
+            break;
+        }
     }
 
-    cgltf_pbr_metallic_roughness *metallic = &c_mat->pbr_metallic_roughness;
-    cgltf_float *mat_color = metallic->base_color_factor;
-
-    mat->col.r = mat_color[0] * 255;
-    mat->col.g = mat_color[1] * 255;
-    mat->col.b = mat_color[2] * 255;
-    mat->col.a = mat_color[3] * 255;
-
-    // If the primitive has a texture
-    if(metallic->base_color_texture.texture != NULL) {
-	int id = (int64_t)metallic->base_color_texture.texture->image;
-	id -= curr_tex_ptr;
-	id /= sizeof(cgltf_image);
-
-	mat->tex = &model->textures[0];
+    if (index >= animation_joint->num_rotations) {
+        return animation_joint->rotations[(animation_joint->num_rotations == 0) ? 0 : (animation_joint->num_rotations - 1)].value;
     }
 
-    mat->metallic = metallic->metallic_factor;
+    return animation_joint->rotations[index].value;
 }
 
-void bs_loadPrim(cgltf_data *data, bs_Mesh *mesh, bs_Model *model, int mesh_index, int prim_index) {
-    cgltf_mesh *c_mesh = &data->meshes[mesh_index];
-    bs_Prim *prim = &mesh->prims[prim_index];
-    prim->material.tex = NULL;
-
-    int attrib_count = c_mesh->primitives[prim_index].attributes_count;
-    int num_floats = cgltf_accessor_unpack_floats(&data->accessors[c_mesh->primitives[prim_index].attributes[0].index], NULL, 0);
-
-    prim->vertices = malloc(num_floats * sizeof(bs_Vertex));
-    prim->vertex_count = num_floats / 3;
-
-    bs_loadMaterial(model, &c_mesh->primitives[prim_index], prim);
-
-	// Read vertices
-    for(int i = 0; i < attrib_count; i++) {
-    	int index = c_mesh->primitives[prim_index].attributes[i].index;
-    	int type = c_mesh->primitives[prim_index].attributes[i].type;
-
-    	switch(type) {
-	    case cgltf_attribute_type_position:
-		bs_readPositionVertices(index, prim, mesh, data); break;
-		case cgltf_attribute_type_normal:
-			bs_readNormalVertices(index, prim, mesh, data); break;
-		case cgltf_attribute_type_texcoord:
-			bs_readTexCoordVertices(index, prim, data); break;
-		case cgltf_attribute_type_joints:
-			bs_readJointIndices(index, prim, data); break;
-		case cgltf_attribute_type_weights:
-			bs_readWeights(index, prim, data); break;
-    	}
+bs_vec3 bs_interpolateTranslation(bs_AnimationJoint* animation_joint, float time) {
+    int time_index = 0;
+    for (; time_index < animation_joint->num_translations; time_index++) {
+        if (animation_joint->translations[time_index].time >= time) {
+            break;
+        }
     }
 
-    // Read indices
-    int num_indices = cgltf_accessor_unpack_floats(c_mesh->primitives[prim_index].indices, NULL, 0);
-    prim->indices = malloc(num_indices * sizeof(int));
-    prim->index_count = num_indices;
-    for(int i = 0; i < num_indices; i++) {
-	cgltf_uint outv;
-	cgltf_accessor_read_uint(c_mesh->primitives[prim_index].indices, i, &outv, 1);
-	prim->indices[i] = outv;
+    if (time_index >= animation_joint->num_translations) {
+        return animation_joint->translations[(animation_joint->num_translations == 0) ? 0 : (animation_joint->num_translations - 1)].value;
     }
 
-    attrib_offset = c_mesh->primitives[prim_index].index_id + 1;
-
-    mesh->vertex_count += prim->vertex_count;
-    model->vertex_count += prim->vertex_count;
-    model->index_count += num_indices;
+    return animation_joint->translations[time_index].value;
 }
 
-void bs_loadJoints(cgltf_data *data, bs_Mesh *mesh, cgltf_mesh *c_mesh) {
-    cgltf_skin *skin = c_mesh->node->skin;
-    if(skin == NULL)
-	    return;
+bs_mat4 bs_jointTransformation(bs_Armature* armature, bs_Joint* joint) {
+    if (joint == NULL) return (bs_mat4)BS_MAT4_IDENTITY;
+    return armature->joint_matrices[joint->id];
+}
 
-    mesh->joints = malloc(skin->joints_count * sizeof(bs_Joint));
-    mesh->joint_count = skin->joints_count;
+bs_vec3 bs_jointPosition(bs_Armature* armature, bs_Joint* joint) {
+    return bs_m4mulv4(bs_jointTransformation(armature, joint), bs_v4(0.0, 0.0, 0.0, 1.0)).xyz;
+}
 
-    for(int i = 0; i < skin->joints_count; i++) {
-	cgltf_node *c_joint = skin->joints[i];
-	bs_Joint *joint = &mesh->joints[i];
+void bs_calculateJoint(bs_Armature* armature, bs_Joint* joint, bs_mat4 transformation, bs_mat4* destination) {
+    const bs_mat4 parent = (joint->parent_idx == -1) ? (bs_mat4)BS_MAT4_IDENTITY : armature->joint_matrices[joint->parent_idx];
 
-	// Set the local matrix
-	bs_mat4 local = GLM_MAT4_IDENTITY_INIT;
-	glm_translate(local, c_joint->translation);
-	glm_quat_rotate(local, (versor){ c_joint->rotation[0], c_joint->rotation[1], c_joint->rotation[2], c_joint->rotation[3] }, local);
-	glm_scale(local, c_joint->scale);
-	glm_mat4_inv(local, joint->local_inv);
+    glm_mat4_mul(joint->bind_matrix.a, joint->local_inv.a, destination);
+    glm_mat4_mul(destination, &transformation, destination);
+    glm_mat4_mul(destination, joint->bind_matrix_inv.a, destination);
+    glm_mat4_mul(parent.a, destination, destination);
+}
 
-	// Set the inverse bind matrix and regular bind matrix
-	cgltf_accessor_read_float(skin->inverse_bind_matrices, i, (float*)joint->bind_matrix_inv, 16);
-	glm_mat4_inv(joint->bind_matrix_inv, joint->bind_matrix);
+void bs_calculateArmaturePose(bs_Armature* armature, bs_Animation* animation, float time) {
+    for (int i = 0; i < armature->num_joints; i++) {
+        bs_Joint* joint = armature->joints + i;
 
-	memcpy(mesh->joints[i].mat, GLM_MAT4_IDENTITY, sizeof(bs_mat4));
+        bs_vec3 translation = bs_interpolateTranslation(animation->joints + i, time);
+        bs_quat rotation = bs_interpolateRotation(armature, animation->joints + i, time);
+        bs_vec3 scale = animation->joints[i].scalings[0].value;
 
-	c_joint->id = i;
-    }
-
-    for(int i = 0; i < skin->joints_count; i++) {
-	int parent_id = skin->joints[i]->parent->id;
-
-	// If parent id is the armature
-	if(parent_id == -1) {
-	    mesh->joints[i].parent = &identity_joint;
-	    continue;
-	}
-
-	mesh->joints[i].parent = &mesh->joints[parent_id];
+        bs_calculateJoint(armature, armature->joints + i, bs_transform(translation, rotation, scale), armature->joint_matrices + i);
     }
 }
 
-void bs_loadMesh(cgltf_data *data, bs_Model *model, int mesh_index) {
-    cgltf_mesh *c_mesh = &data->meshes[mesh_index];
-    cgltf_node *node = &data->nodes[mesh_index];
+bs_ArmatureStorage bs_pushArmature(bs_Armature *armature, bs_Animation *resting_anim) {
+    bs_ArmatureStorage armature_storage;
 
-    model->meshes[mesh_index].joint_count = 0;
-    model->meshes[mesh_index].name = malloc(strlen(c_mesh->name));
-    strcpy(model->meshes[mesh_index].name, c_mesh->name);
+    armature_storage.buffer_location = armature_buf.size;
+    armature_storage.armature = armature;
 
-    memcpy(&model->meshes[mesh_index].pos, node->translation, sizeof(bs_vec3));
-    memcpy(&model->meshes[mesh_index].rot, node->rotation, sizeof(bs_vec4));
-    memcpy(&model->meshes[mesh_index].sca, node->scale, sizeof(bs_vec4));
+    if (resting_anim != NULL) {
+        bs_calculateArmaturePose(armature, resting_anim, 0.0);
+    }
+    else {
+        // set to identity matrix if theres no resting animation
+        for (int i = 0; i < armature->num_joints; i++) {
+            bs_mat4* joint = armature->joint_matrices + i;
+            *joint = (bs_mat4)BS_MAT4_IDENTITY;
+        }
+    }
 
-    bs_mat4 local = GLM_MAT4_IDENTITY_INIT;
-    glm_translate(local, node->translation);
-    glm_quat_rotate(local, (versor){ node->rotation[0], node->rotation[1], node->rotation[2], node->rotation[3] }, local);
-    glm_scale(local, node->scale);
+    bs_bufferAppendRange(&armature_buf, armature->joints, armature->num_joints);
+    return armature_storage;
+}
 
-    memcpy(&model->meshes[mesh_index].mat, &local, sizeof(bs_mat4));
+void bs_modelAttribData(bs_Gltf* gltf, bs_Primitive* primitive, int accessor, int num_components, int offset) {
+    int num_floats = 0;
+    float* a = bs_gltfFloatArray(gltf, accessor, &num_floats, num_components);
 
-    model->meshes[mesh_index].prims = malloc(c_mesh->primitives_count * sizeof(bs_Prim));
-    model->meshes[mesh_index].prim_count = c_mesh->primitives_count;
-
-    bs_loadJoints(data, &model->meshes[mesh_index], c_mesh);
-
-    for(int i = 0; i < c_mesh->primitives_count; i++) {
-	bs_loadPrim(data, &model->meshes[mesh_index], model, mesh_index, i);
+    for (int i = 0; i < num_floats / num_components; i++, offset += primitive->vertex_size) {
+        for (int j = 0; j < num_components; j++) {
+            primitive->vertices[offset + j] = a[i * num_components + j];
+        }
     }
 }
 
-void bs_loadModelTexturesToAtlas() {
-}
+void bs_modelAttribDataI(
+    bs_Gltf* gltf, 
+    bs_Primitive* primitive, 
+    int accessor, 
+    int num_components, 
+    int offset, 
+    unsigned int* out) 
+{
+    int num_floats = 0;
+    bs_U8* arr = bs_gltfFloatArray(gltf, accessor, &num_floats, num_components);
 
-void bs_loadModelTextures(cgltf_data* data, bs_Model *model) {
-	if(data->textures_count == 0)
-		return;
-
-	int64_t ids[data->textures_count];
-
-	for(int i = 0; i < data->textures_count; i++) {
-		// Getting the pointers to all images in the form of a 64 bit int
-		ids[i] = (int64_t)data->textures[i].image;
-	}
-
- 	model->textures = malloc(data->textures_count * sizeof(bs_Tex2D));
-	for(int i = 0; i < data->textures_count; i++) {
-		char texture_path[256] = "resources/models/";
-		strcat(texture_path, data->images[i].name);
-		strcat(texture_path, ".png");
-
-		//bs_loadTex2D(model->textures+i, texture_path);
-		//bs_textureSettings(BS_LINEAR, BS_LINEAR);
-		//bs_pushTexture(BS_CHANNEL_RGBA, BS_CHANNEL_RGBA, BS_UBYTE);
-	}
-
- 	curr_tex_ptr = ids[0];
-
-
-	// for(int i = 0; i < data->textures_count; i++) {
-	// 	ids[i] -= curr_tex_ptr;
-	// 	// Divide by sizeof image so that stride between indices in ids is at most 1
-	// 	ids[i] /= sizeof(cgltf_image);
-	// 	model->textures[i] = images[ids[i]];
-	// }
-}
-
-void bs_loadAnim(cgltf_data* data, int index) {
-	cgltf_animation *c_anim = &data->animations[index];
-	bs_Anim *anim = &anims[index];
-
-	int joint_count = c_anim->samplers_count / 3;
-	int frame_count = cgltf_accessor_unpack_floats(c_anim->samplers[0].input, NULL, 0);
-
-	anim->joints = malloc(joint_count * frame_count * sizeof(bs_Joint));
-	anim->joint_count = joint_count;
-
-	int i, i3 = 0; 
-	for(i = 0; i < joint_count; i++, i3+=3) {
-		cgltf_animation_sampler *c_sampler = &c_anim->samplers[i3];
-		cgltf_animation_channel *c_channel = &c_anim->channels[i3];
-
-		// Input accessor contains timings for every frame in current joint
-		// Output contains translation, rotation and scale for every frame in current joint
-		cgltf_accessor *input = c_sampler->input;
-		cgltf_accessor *translation_output = c_sampler->output + 0;
-		cgltf_accessor *rotation_output    = c_sampler->output + 1;
-		cgltf_accessor *scale_output       = c_sampler->output + 2;
-
-		for(int j = 0; j < frame_count; j++) {
-			int index = i + (j * joint_count);
-			bs_Joint *joint = &anim->joints[index];
-
-			bs_mat4 joint_mat = GLM_MAT4_IDENTITY_INIT;
-			vec3   tra;
-			versor rot;
-			vec3   sca;
-
-			cgltf_accessor_read_float(translation_output, j, (float*)&tra, 3);
-			cgltf_accessor_read_float(rotation_output   , j, (float*)&rot, 4);
-			cgltf_accessor_read_float(scale_output      , j, (float*)&sca, 3);
-
-			glm_translate(joint_mat, tra);
-			glm_quat_rotate(joint_mat, rot, joint_mat);
-			glm_scale(joint_mat, sca);
-
-			memcpy(joint->mat, joint_mat, sizeof(bs_mat4));
-		}
-	}
-}
-
-void bs_loadAnims(cgltf_data* data) {
-	anim_count = data->animations_count;
-	if(anim_count == 0)
-		return;
-
-	anims = malloc(anim_count * sizeof(bs_Anim));
-
-	bs_loadAnim(data, 0);
-}
-
-void bs_loadModel(char *model_path, char *texture_folder_path, bs_Model *model) {
-    cgltf_options options = {0};
-    cgltf_data* data = NULL;
-
-    // Get path to GLTF binary data
-    char bin_path[256];
-    int path_len = strlen(model_path);
-    strncpy(bin_path, model_path, path_len-4);
-    strcat(bin_path, "bin");
-
-    // Load the GLTF json and binary data
-    cgltf_parse_file(&options, model_path, &data);
-    cgltf_load_buffers(&options, data, bin_path);
-
-    int mesh_count = data->meshes_count;
-
-    model->meshes = malloc(mesh_count * sizeof(bs_Mesh));
-    model->mesh_count = mesh_count;
-    model->vertex_count = 0;
-    model->index_count = 0;
-
-    model->name = malloc(path_len);
-    strcpy(model->name, model_path);
-
-    // bs_loadModelTextures(data, model);
-    bs_loadAnims(data);
-
-    for(int i = 0; i < mesh_count; i++) {
-	bs_loadMesh(data, model, i);
-    }
-//    cgltf_free(data);
-}
-
-void bs_animate(bs_Mesh *mesh, bs_Anim *anim, int frame) {
-    for(int i = 0; i < anim->joint_count; i++) {
-	bs_Joint *change_joint = &mesh->joints[i];
-	bs_Joint *parent = mesh->joints[i].parent;
-
-	memcpy(change_joint->mat, change_joint->bind_matrix, sizeof(bs_mat4));
-
-	glm_mat4_mul(change_joint->mat, change_joint->local_inv, change_joint->mat);
-	glm_mat4_mul(change_joint->mat, anim->joints[i + frame * anim->joint_count].mat, change_joint->mat);
-	glm_mat4_mul(change_joint->mat, change_joint->bind_matrix_inv, change_joint->mat);
-	glm_mat4_mul(parent->mat, change_joint->mat, change_joint->mat);
-	
-	bs_uniform_mat4(change_joint->loc, change_joint->mat);
+    for (int i = 0; i < num_floats / num_components; i++, offset += primitive->vertex_size) {
+        for (int j = 0; j < num_components; j++) {
+            out[offset + j] = arr[i * num_components];
+        }
     }
 }
 
-bs_Anim *bs_getAnims() {
-	return anims;
+void bs_readIndices(
+    bs_Gltf* gltf, 
+    bs_Model* model, 
+    bs_Mesh* mesh, 
+    bs_Primitive* primitive, 
+    bs_Json* primitive_json) 
+{
+    int accessor = bs_jsonField(primitive_json, "indices").as_int;
+
+    bs_U16* arr = bs_gltfFloatArray(gltf, accessor, &primitive->num_indices, 1);
+    primitive->indices = bs_alloc(primitive->num_indices * sizeof(int));
+    for (int i = 0; i < primitive->num_indices; i++) {
+        primitive->indices[i] = arr[i];
+    }
+
+    mesh->num_vertices += primitive->num_vertices;
+    mesh->num_indices += primitive->num_indices;
+    model->num_vertices += primitive->num_vertices;
+    model->num_indices += primitive->num_indices;
+}
+
+bs_Primitive* bs_loadPrim(
+    bs_Gltf* gltf,
+    bs_Model* model, 
+    bs_Mesh* mesh, 
+    bs_Json* mesh_json, 
+    bs_Primitive* primitive, 
+    bs_Json* primitive_json) 
+{
+    memset(primitive, 0, sizeof(bs_Primitive));
+
+    bs_Json attributes = bs_jsonField(primitive_json, "attributes").as_object;
+    bs_JsonValue position = bs_jsonField(&attributes, "POSITION");
+    bs_JsonValue normal = bs_jsonField(&attributes, "NORMAL");
+    bs_JsonValue tex_coord = bs_jsonField(&attributes, "TEXCOORD_0");
+    bs_JsonValue joints = bs_jsonField(&attributes, "JOINTS_0");
+    bs_JsonValue weights = bs_jsonField(&attributes, "WEIGHTS_0");
+
+    primitive->aabb.max = bs_v3s(-FLT_MAX);
+    primitive->aabb.min = bs_v3s(FLT_MAX);
+
+    int num_floats = 0;
+    int* indices_array = bs_gltfIntArray(gltf, position.as_int, &num_floats, 1, sizeof(bs_U32));
+
+    int vertex_size = 0;
+
+    if (position.found) {
+        vertex_size += 3;
+    }
+    if (normal.found) {
+        primitive->offset_nor = vertex_size;
+        vertex_size += 3;
+    }
+    if (tex_coord.found) {
+        primitive->offset_tex = vertex_size;
+        vertex_size += 2;
+    }
+    if (joints.found) {
+        primitive->offset_bid = vertex_size;
+        vertex_size += 4;
+    }
+    if (weights.found) {
+        primitive->offset_wei = vertex_size;
+        vertex_size += 4;
+    }
+
+    primitive->parent = mesh;
+    primitive->vertex_size = vertex_size;
+    primitive->num_vertices = num_floats / 3;
+    primitive->vertices = bs_alloc(primitive->num_vertices * vertex_size * sizeof(float));
+
+    if (position.found) bs_modelAttribData(gltf, primitive, position.as_int, 3, 0);
+    if (normal.found) bs_modelAttribData(gltf, primitive, normal.as_int, 3, primitive->offset_nor);
+    if (tex_coord.found) bs_modelAttribData(gltf, primitive, tex_coord.as_int, 2, primitive->offset_tex);
+    if (joints.found) bs_modelAttribDataI(gltf, primitive, joints.as_int, 4, primitive->offset_bid, primitive->vertices);
+    if (weights.found) bs_modelAttribData(gltf, primitive, weights.as_int, 4, primitive->offset_wei);
+
+    bs_readIndices(gltf, model, mesh, primitive, primitive_json);
+    
+    return primitive;
+}
+
+bs_Mesh* bs_loadMesh(
+    bs_Gltf* gltf, 
+    bs_Model* model, 
+    bs_Mesh* mesh, 
+    bs_Json* mesh_json, 
+    bs_Json* node_json) 
+{
+    memset(mesh, 0, sizeof(bs_Mesh));
+
+    bs_JsonValue name = bs_jsonField(node_json, "name");
+    bs_JsonValue primitives = bs_jsonField(mesh_json, "primitives");
+
+    mesh->parent = model;
+    mesh->aabb.max = bs_v3s(-FLT_MAX);
+    mesh->aabb.min = bs_v3s(FLT_MAX);
+    mesh->name = bs_alloc(strlen(name.as_string.value) + 1);
+    mesh->primitives = bs_alloc(primitives.as_array.size * sizeof(bs_Primitive));
+    mesh->num_primitives = primitives.as_array.size;
+    sprintf(mesh->name, "%s", name.as_string.value);
+
+    for (int i = 0; i < mesh->num_primitives; i++) {
+        bs_Json* primitive_json = primitives.as_array.as_objects + i;
+        bs_loadPrim(gltf, model, mesh, mesh_json, mesh->primitives + i, primitive_json);
+    }
+
+    model->prim_count += mesh->num_primitives;
+    return mesh;
+}
+
+void bs_loadAnimationChannel(
+    bs_Gltf* gltf,
+    bs_Animation* animation,
+    bs_Channel* channel,
+    bs_U32 num_floats, 
+    bs_U32 offset, 
+    bs_U32* transformation_offset, 
+    void** transformations) 
+{
+    *transformations = animation->data + offset + *transformation_offset;
+    const size_t size = num_floats * sizeof(float) + sizeof(float);
+
+    for (int i = 0; i < channel->num_inputs; i++, *transformation_offset += size) {
+        float time = channel->inputs[i];
+        float transformation[4];
+
+        int o = offset + *transformation_offset;
+
+        memcpy(transformation, channel->outputs + i * num_floats, num_floats * sizeof(float));
+        memcpy(animation->data + o, &time, sizeof(time));
+        memcpy(animation->data + o + sizeof(float), transformation, num_floats * sizeof(float));
+
+        animation->length = bs_max(animation->length, time);
+    }
+}
+
+void bs_calculateAnimationSizes(
+    bs_Channel* channels,
+    int num_channels,
+    bs_U32* translations, 
+    bs_U32* rotations, 
+    bs_U32* scalings, 
+    int* joint_count) 
+{
+    bs_U32 num_translations = 0, num_rotations = 0, num_scalings = 0;
+
+    // size calculation
+    int last_node_i = -1;
+    for (int i = 0; i < num_channels; i++) {
+        bs_Channel* channel = channels + i;
+
+        if (channel->type == BS_TRANSLATION) num_translations += channel->num_inputs;
+        else if (channel->type == BS_ROTATION) num_rotations += channel->num_inputs;
+        else num_scalings += channel->num_inputs;
+
+        if (last_node_i != channel->node) {
+            (*joint_count)++;
+        }
+
+        last_node_i = channel->node;
+    }
+
+    (*translations) += num_translations * (sizeof(bs_vec3) + sizeof(float));
+    (*rotations) += num_rotations * (sizeof(bs_quat) + sizeof(float));
+    (*scalings) += num_scalings * (sizeof(bs_vec3) + sizeof(float));
+}
+
+void bs_channelDeclaration(bs_Json* json, void* destination, void* param) {
+    bs_Channel channel = { 0 };
+    bs_Gltf* gltf = param;
+
+    bs_Json target = bs_jsonField(json, "target").as_object;
+    const char* path = bs_jsonField(&target, "path").as_string.value;
+
+    bs_Json* sampler = gltf->samplers.as_objects + bs_jsonField(json, "sampler").as_int;
+    int input = bs_jsonField(sampler, "input").as_int;
+    int output = bs_jsonField(sampler, "output").as_int;
+
+    int num_outputs = 0;
+    channel.node = bs_jsonField(&target, "node").as_int;
+    channel.inputs = bs_gltfFloatArray(gltf, input, &channel.num_inputs, 1);
+    channel.outputs = bs_gltfFloatArray(gltf, output, &num_outputs, 1);
+
+    if (strcmp(path, "translation") == 0) channel.type = BS_TRANSLATION;
+    else if (strcmp(path, "rotation") == 0) channel.type = BS_ROTATION;
+    else channel.type = BS_SCALE;
+
+    memcpy(destination, &channel, sizeof(bs_Channel));
+}
+
+void bs_loadAnimation(bs_Gltf* gltf, bs_Model* model, bs_Json* animation_json) {
+    bs_Animation animation = { 0 };
+
+    gltf->samplers = bs_jsonField(animation_json, "samplers").as_array;
+    int num_channels = 0;
+    bs_Channel* channels = bs_jsonFieldObjectArray(
+        animation_json, "channels", &num_channels,
+        sizeof(bs_Channel), bs_channelDeclaration, gltf
+    );
+
+    const char* name = bs_jsonField(animation_json, "name").as_string.value;
+    animation.name = bs_alloc(strlen(name) + 1);
+    sprintf(animation.name, "%s", name);
+
+    bs_U32 num_translations = 0;
+    bs_U32 num_rotations = 0;
+    bs_U32 num_scalings = 0;
+
+    bs_calculateAnimationSizes(
+        channels,
+        num_channels,
+        &num_translations, 
+        &num_rotations, 
+        &num_scalings, 
+        &animation.joint_count
+    );
+
+    animation.model = model;
+    animation.data = bs_alloc(num_translations + num_rotations + num_scalings);
+    animation.joints = bs_alloc(animation.joint_count * sizeof(bs_AnimationJoint));
+    memset(animation.joints, 0, animation.joint_count * sizeof(bs_AnimationJoint));
+
+    for (int i = 0; i < animation.joint_count; i++) {
+        animation.joints[i].id = i;
+    }
+
+    int last_node_i = -1;
+    bs_AnimationJoint* joint = animation.joints;
+    bs_U32 translation_offset = 0;
+    bs_U32 rotation_offset = 0;
+    bs_U32 scale_offset = 0;
+
+    for (int i = 0; i < num_channels; i++) {
+        bs_Channel* channel = channels + i;
+
+        if (last_node_i != -1 && last_node_i != channel->node) {
+            joint++;
+        }
+
+        if (channel->type == BS_TRANSLATION) {
+            joint->num_translations = channel->num_inputs;
+            bs_loadAnimationChannel(
+                gltf, &animation, channel, 
+                3, 0,
+                &translation_offset, 
+                &joint->translations
+            );
+        }
+        else if (channel->type == BS_ROTATION) {
+            joint->num_rotations = channel->num_inputs;
+            bs_loadAnimationChannel(
+                gltf, &animation, channel,
+                4, num_translations,
+                &rotation_offset,
+                &joint->rotations
+            );
+        }
+        else {
+            joint->num_scalings = channel->num_inputs;
+            bs_loadAnimationChannel(
+                gltf, &animation, channel, 
+                3, num_translations + num_rotations,
+                &scale_offset,
+                &joint->scalings
+            );
+        }
+
+        last_node_i = channel->node;
+    }
+
+    bs_bufferAppend(&animation_buf, &animation);
+    free(channels);
+}
+
+void bs_loadArmature(bs_Gltf* gltf, bs_Json* skin, bs_Armature* armature) {
+    bs_JsonValue name = bs_jsonField(skin, "name");
+    bs_JsonValue inverse_bind_matrices = bs_jsonField(skin, "inverseBindMatrices");
+    bs_JsonArray joints = bs_jsonField(skin, "joints").as_array;
+
+    int strlen_skin_name = strlen(name.as_string.value);
+    armature->name = bs_alloc(strlen_skin_name + 1);
+    strncpy(armature->name, name.as_string.value, strlen_skin_name);
+    armature->name[strlen_skin_name] = '\0';
+
+    armature->joint_matrices = bs_alloc(joints.size * sizeof(bs_Joint));
+    armature->joints = bs_alloc(joints.size * sizeof(bs_Joint));
+    armature->num_joints = joints.size;
+
+    int stack_size = 0;
+    bs_Joint* root = &armature->joints[stack_size++];
+    for (int i = 0; i < armature->num_joints; i++) {
+        armature->joints[i].parent_idx = -1;
+    }
+    for (int i = 0; i < armature->num_joints; i++) {
+        bs_Json* node = gltf->nodes.as_objects + joints.as_ints[i];
+        bs_Joint* joint = armature->joints + i;
+
+        bs_JsonArray children = bs_jsonField(node, "children").as_array;
+        for (int j = 0; j < children.size; j++) {
+            // todo improve this
+            bs_Json* child_node = gltf->nodes.as_objects + children.as_ints[j];
+            for (int k = 0; k < armature->num_joints; k++) {
+                if (joints.as_ints[k] == children.as_ints[j]) {
+                    armature->joints[k].parent_idx = i;
+                    break;
+                }
+            }
+            children.as_ints[j] = i;
+        }
+
+        joint->bind_matrix_inv = bs_gltfMat4(gltf, inverse_bind_matrices.as_int, i);
+        glm_mat4_inv(joint->bind_matrix_inv.a, joint->bind_matrix.a);
+        glm_mat4_inv(
+            bs_transform(
+                bs_jsonFieldV3(node, "translation", bs_v3s(0.0)),
+                bs_jsonFieldV4(node, "rotation", bs_v4(0.0, 0.0, 0.0, 1.0)),
+                bs_jsonFieldV3(node, "scale", bs_v3s(1.0))
+            ).a,
+            joint->local_inv.a
+        );
+
+        // Set name
+        const char* joint_name = bs_jsonField(node, "name").as_string.value;
+        int joint_name_len = strlen(joint_name);
+        joint->name = bs_alloc(joint_name_len + 1);
+        memcpy(joint->name, joint_name, joint_name_len);
+        joint->name[joint_name_len] = '\0';
+        joint->id = i;
+    }
+}
+
+bs_Model bs_model(const char* directory, const char* file_name) {
+    const char model_path[MAX_PATH];
+    sprintf(model_path, "%s/%s", directory, file_name);
+
+    bs_Model model = { 0 };
+    char* extension = strrchr(model_path, '.');
+
+    if (extension == NULL) {
+        bs_callErrorf(
+            BS_ERROR_MODEL_INVALID_FILE_FORMAT, 2,
+            "No extension found for path \"%s\"", model_path
+        );
+    }
+    else if (strcmp(extension, ".gltf") != 0) {
+        bs_callErrorf(
+            BS_ERROR_MODEL_INVALID_FILE_FORMAT, 2,
+            "Invalid model file format for path \"%s\", needs to be .glb or .gltf", model_path
+        );
+        return;
+    }
+
+    int len = 0;
+    char* raw = bs_loadFile(model_path, &len);
+
+    bs_Json json = bs_json(raw);
+    bs_Gltf gltf = { 0 };
+    gltf.meshes = bs_jsonField(&json, "meshes").as_array;
+    gltf.skins = bs_jsonField(&json, "skins").as_array;
+    gltf.nodes = bs_jsonField(&json, "nodes").as_array;
+    gltf.accessors = bs_jsonField(&json, "accessors").as_array;
+    gltf.buffer_views = bs_jsonField(&json, "bufferViews").as_array;
+    gltf.buffers = bs_jsonField(&json, "buffers").as_array;
+    gltf.animations = bs_jsonField(&json, "animations").as_array;
+
+    if (gltf.buffers.size != 1) {
+        bs_callErrorf(BS_ERROR_MODEL_GLTF_BUFFER_SIZE, 2, "Invalid buffer size (%d)", gltf.buffers.size);
+    }
+
+    int sz = 0;
+    const char buffer_path[MAX_PATH];
+    const char* uri = bs_jsonField(gltf.buffers.as_objects, "uri").as_string.value;
+    gltf.buffer_size = bs_jsonField(gltf.buffers.as_objects, "byteLength").as_int;
+    sprintf(buffer_path, "%s/%s", directory, uri);
+    gltf.buffer = bs_loadFile(buffer_path, &sz);
+
+    model.num_meshes = gltf.meshes.size;
+    model.aabb.max = bs_v3s(-FLT_MAX);
+    model.aabb.min = bs_v3s(FLT_MAX);
+    model.meshes = bs_alloc(model.num_meshes * sizeof(bs_Mesh));
+    model.name = bs_alloc(strlen(model_path) + 1);
+    strcpy(model.name, model_path);
+
+    model.armature_count = gltf.skins.size;
+    model.armatures = bs_alloc(model.armature_count * sizeof(bs_Armature));
+
+    for (int i = 0; i < model.armature_count; i++) {
+        bs_loadArmature(&gltf, gltf.skins.as_objects + i, model.armatures + i);
+    }
+
+    for (int i = 0; i < gltf.nodes.size; i++) {
+        bs_Json* node = gltf.nodes.as_objects + i;
+        bs_JsonValue mesh_i = bs_jsonField(node, "mesh");
+        if (!mesh_i.found) continue;
+
+        bs_Json* mesh_json = gltf.meshes.as_objects + mesh_i.as_int;
+        bs_loadMesh(&gltf, &model, model.meshes + mesh_i.as_int, mesh_json, node);
+    }
+
+    model.anim_count = gltf.animations.size;
+    model.animation_offset = animation_buf.size;
+
+    for (int i = 0; i < model.anim_count; i++) {
+        bs_loadAnimation(&gltf, &model, gltf.animations.as_objects + i);
+    }
+
+    return model;
+}
+
+void bs_freeModel(bs_Model* model) {
+    for (int i = 0; i < model->num_meshes; i++) {
+        bs_Mesh* mesh = model->meshes + i;
+        for (int j = 0; j < mesh->num_primitives; j++) {
+            bs_Primitive* primitive = mesh->primitives + j;
+            bs_free(primitive->indices);
+            bs_free(primitive->vertices);
+        }
+        bs_free(mesh->name);
+        bs_free(mesh->primitives);
+    }
+    bs_free(model->armatures);
+    bs_free(model->name);
+    bs_free(model->meshes);
+}
+
+bs_U32 bs_numModelTriangles(bs_Model* model) {
+    return model->num_indices / 3;
+}
+
+void bs_calculateModelBounds(bs_Model* model) {
+    if (model->aabb.min.x != FLT_MAX) return;
+
+    for (int i = 0; i < model->num_meshes; i++) {
+        bs_Mesh* mesh = model->meshes + i;
+
+        for (int j = 0; j < mesh->num_primitives; j++) {
+            bs_Primitive* prim = mesh->primitives + j;
+
+            for (int k = 0; k < prim->num_vertices; k++) {
+                bs_vec3 pos = *(bs_vec3*)(prim->vertices + k * prim->vertex_size);
+                prim->aabb.min = bs_v3min(prim->aabb.min, bs_v3muls(pos, bs_defScale()));
+                prim->aabb.max = bs_v3max(prim->aabb.max, bs_v3muls(pos, bs_defScale()));
+            }
+
+            mesh->aabb.min = bs_v3min(mesh->aabb.min, prim->aabb.min);
+            mesh->aabb.max = bs_v3max(mesh->aabb.max, prim->aabb.max);
+        }
+
+        model->aabb.min = bs_v3min(model->aabb.min, mesh->aabb.min);
+        model->aabb.max = bs_v3max(model->aabb.max, mesh->aabb.max);
+    }
+}
+
+bs_Mesh* bs_meshFromName(bs_Model* model, const char* name) {
+    for(int i = 0; i < model->num_meshes; i++) {
+        bs_Mesh* mesh = model->meshes + i;
+        if (strcmp(name, mesh->name) == 0) {
+            return model->meshes + i;
+        }
+    }
+
+    bs_callError(BS_ERROR_MODEL_MESH_NOT_FOUND, name);
+    return NULL;
+}
+
+int bs_meshIdxFromName(bs_Model* model, const char* name) {
+    bs_Mesh* mesh = bs_meshFromName(model, name);
+    if (mesh == NULL) return -1;
+
+    bs_U64 ptr0 = (bs_U64)model->meshes;
+    bs_U64 ptr1 = (bs_U64)mesh;
+
+    return (ptr1 - ptr0) / sizeof(bs_Mesh);
+}
+
+bs_Armature *bs_armature(bs_Model *model, const char* name) {
+    for(int i = 0; i < model->armature_count; i++) {
+	    bs_Armature *armature = model->armatures + i;
+        if (strcmp(name, armature->name) == 0) return armature;
+    }
+    
+    bs_callError(BS_ERROR_MODEL_ARMATURE_NOT_FOUND, name);
+    return NULL;
+}
+
+bs_Joint* bs_boneFromName(bs_Armature* armature, const char* name) {
+    for (int i = 0; i < armature->num_joints; i++) {
+        if (strcmp(armature->joints[i].name, name) == 0) {
+            return armature->joints + i;
+        }
+    }
+
+    bs_callError(BS_ERROR_MODEL_BONE_NOT_FOUND, name);
+    return armature->joints;
+}
+
+bs_Animation* bs_animation(bs_Model* model, const char* name) {
+    for(int i = 0; i < model->anim_count; i++) {
+	    bs_Animation *anim = bs_bufferData(&animation_buf, model->animation_offset + i);
+
+        if (strcmp(name, anim->name) == 0) {
+            return anim;
+        }
+    }
+
+    bs_callError(BS_ERROR_MODEL_ANIMATION_NOT_FOUND, name);
+    return NULL;
+}
+
+int bs_jointOffsetFromName(bs_Armature* armature, const char* name) {
+    for (int i = 0; i < armature->num_joints; i++) {
+        if (strcmp(armature->joints[i].name, name) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
 }

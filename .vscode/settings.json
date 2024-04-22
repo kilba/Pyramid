@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "xiosbase": "c",
+        "wnd.h": "c",
+        "glfw3.h": "c",
+        "glfw3native.h": "c",
+        "system_error": "c",
+        "bs_ini.h": "c",
+        "vulkan.h": "c",
+        "bs_math.h": "c"
+    }
+}

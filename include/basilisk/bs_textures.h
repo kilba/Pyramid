@@ -3,37 +3,39 @@
 
 #include <bs_types.h>
 
-/* --- TEXTURES --- */
-void bs_texture(bs_Tex2D *texture, bs_ivec2 dim, int type);
-void bs_textureDataRaw(unsigned char *data);
-bs_U32 bs_textureDataFile(char *path, bool update_dimensions);
-void bs_loadTex2D(bs_Tex2D *tex, char *path);
-void bs_textureSettings(int min_filter, int mag_filter);
+void bs_saveTexture32(const char *name, unsigned char *data, int w, int h);
+
+void bs_pushImageBuffers();
+void bs_pushImages();
+bs_Image* bs_image(char* path, bs_U32 num_frames);
+bs_Image* bs_imageTtfAtlas(int dim, bs_U8* data);
+bs_Image* bs_getLastImage();
+void bs_pushImages();
+
+void bs_texture(bs_Texture* texture, bs_vec2 dim, int type);
+bs_U32 bs_textureDataFile(const char *path, bool update_dimensions);
 void bs_pushTexture(int internal_format, int format, int type);
-void bs_textureMipmaps();
+void bs_textureMinMag(int min_filter, int mag_filter);
 
-void bs_texSplit(int frame_count);
-void bs_texSplitVert(int frame_count);
+void bs_selectTexture(bs_Texture* texture, bs_U32 tex_unit);
 
-void bs_selectTextureTarget(bs_Tex2D *texture, int tex_unit, int target);
-void bs_selectTexture(bs_Tex2D *texture, int tex_unit);
-bs_Tex2D *bs_selectedTexture();
+void bs_textureArray(bs_Texture* tex, bs_vec2 max_dim, int num_textures);
+bs_U32 bs_textureArrayAppendPNG(const char *path);
 
-void bs_depth(bs_Tex2D *texture, bs_ivec2 dim);
-void bs_depthLin(bs_Tex2D *texture, bs_ivec2 dim);
+void bs_linearFiltering();
+void bs_nearestFiltering();
 
-void bs_textureRGBA(bs_Tex2D *texture, bs_ivec2 dim);
-void bs_textureLinRGBA(bs_Tex2D *texture, bs_ivec2 dim);
+void bs_depthStencil(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_depth(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureR(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRG(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGB(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGB16f(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGB32f(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGBA(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGBA16f(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureRGBA32f(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_texture_11_11_10(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
+void bs_textureR16U(bs_Texture* texture, bs_vec2 dim, bs_U8* data);
 
-void bs_texturePNG(bs_Tex2D *texture, char *path);
-void bs_textureLinPNG(bs_Tex2D *texture, char *path);
-
-void bs_depthCube(bs_Tex2D *texture, int dim);
-void bs_depthCubeLin(bs_Tex2D *texture, int dim);
-void bs_textureCube(bs_Tex2D *texture, int dim, char *paths[6]);
-void bs_textureCubeLin(bs_Tex2D *texture, int dim, char *paths[6]);
-
-void bs_textureArray(bs_Tex2D *tex, bs_ivec2 max_dim, int num_textures);
-bs_U32 bs_textureArrayAppendPNG(char *path);
-
-#endif /* BS_TEXTURES_H */
+#endif // BS_TEXTURES_H

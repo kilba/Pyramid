@@ -1018,6 +1018,18 @@
 			"value" : "FALSE"
 		},
 		{
+			"name" : "GLFW_VULKAN_STATIC",
+			"properties" : 
+			[
+				{
+					"name" : "HELPSTRING",
+					"value" : "ON"
+				}
+			],
+			"type" : "BOOL",
+			"value" : "OFF"
+		},
+		{
 			"name" : "bsvk_BINARY_DIR",
 			"properties" : 
 			[
