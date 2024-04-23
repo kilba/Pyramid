@@ -11,6 +11,7 @@
 #include <bs_types.h>
 #include <bs_math.h>
 #include <bs_ini.h>
+#include <bs_mem.h>
 
 typedef struct {
 	bs_vec2 resolution;
@@ -57,6 +58,17 @@ VkQueue present_queue;
 
 VkFence render_fence;
 VkSwapchainKHR swapchain;
+VkSemaphore swapchain_semaphore, render_semaphore;
+
+bs_ivec2 swapchain_extent = bs_iv2s(0);
+
+VkImageView* swapchain_img_views = NULL;
+VkImage* swapchain_imgs = NULL;
+bs_U32 num_swapchain_imgs = 0;
+
+VkFormat swapchain_img_format;
+
+VkCommandBuffer command_buffer = { 0 };
 
 typedef struct {
     uint32_t family_count;
@@ -296,14 +308,19 @@ void bs_prepareSwapchain() {
 	bs_U32 indices[2] = { queue_family_indices.graphics_family, queue_family_indices.present_family };
 
 	// creation
+    swapchain_extent = bs_iv2(
+        bs_clamp(w, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+        bs_clamp(h, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+    );
+
     VkSwapchainCreateInfoKHR swapchain_ci = { 0 };
     swapchain_ci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     swapchain_ci.surface = surface;
 	swapchain_ci.imageArrayLayers = 1;
 	swapchain_ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     swapchain_ci.minImageCount = bs_clamp(2, capabilities.minImageCount, capabilities.maxImageCount);
-	swapchain_ci.imageExtent.width = bs_clamp(w, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-	swapchain_ci.imageExtent.height = bs_clamp(h, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+	swapchain_ci.imageExtent.width = swapchain_extent.x;
+	swapchain_ci.imageExtent.height = swapchain_extent.y;
 	swapchain_ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	swapchain_ci.imageSharingMode = (queue_family_indices.graphics_family == queue_family_indices.present_family) ?
 		VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
@@ -324,6 +341,9 @@ void bs_prepareSwapchain() {
 		}
 	}
 
+    swapchain_img_format = swapchain_ci.imageFormat;
+    swapchain_img_views = malloc(num_swapchain_imgs * sizeof(VkImageView));
+
 	for(int i = 0; i < num_modes; i++) {
 		if(modes[i] == VK_PRESENT_MODE_FIFO_KHR) {
 			// VK_PRESENT_MODE_FIFO_KHR = double buffering
@@ -339,7 +359,130 @@ void bs_prepareSwapchain() {
 
 	BS_VK_ERR(vkCreateSwapchainKHR(device, &swapchain_ci, NULL, &swapchain), "Failed to create swapchain");
 
+	// get images
+	vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_imgs, NULL);
+    swapchain_imgs = malloc(num_swapchain_imgs * sizeof(VkImage));
+    vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_imgs, swapchain_imgs);
+
 	free(formats);
+}
+
+void bs_prepareImageViews() {
+    for(int i = 0; i < num_swapchain_imgs; i++) {
+        VkImageViewCreateInfo image_view_ci = { 0 };
+        image_view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        image_view_ci.image = swapchain_imgs[i];
+        image_view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        image_view_ci.format = swapchain_img_format;
+        image_view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_view_ci.subresourceRange.levelCount = 1;
+        image_view_ci.subresourceRange.layerCount = 1;
+
+        BS_VK_ERR(vkCreateImageView(device, &image_view_ci, NULL, swapchain_img_views + i), "Failed to create image view");
+    }
+}
+
+VkShaderModule bs_spirv(const char* path) {
+    VkShaderModule module;
+
+    int len = 0;
+    const char* spirv = bs_loadFile(path, &len);
+
+    VkShaderModuleCreateInfo shader_ci = { 0 };
+    shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_ci.codeSize = len;
+    shader_ci.pCode = spirv;
+
+    BS_VK_ERR(vkCreateShaderModule(device, &shader_ci, NULL, &module), "Failed to load spir-v");
+
+    return module;
+}
+
+void bs_shaderv(const char* vs_path, const char* fs_path) {
+    VkShaderModule vs = bs_spirv(vs_path);
+    VkShaderModule fs = bs_spirv(fs_path);
+
+    VkPipelineShaderStageCreateInfo vs_ci = { 0 };
+    vs_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vs_ci.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vs_ci.module = vs;
+    vs_ci.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fs_ci = { 0 };
+    fs_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fs_ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fs_ci.module = fs;
+    fs_ci.pName = "main";
+
+    vkDestroyShaderModule(device, vs, NULL);
+    vkDestroyShaderModule(device, fs, NULL);
+
+    // pipeline
+    VkDynamicState states[] = { 
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo pipeline_ci = { 0 };
+    pipeline_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    pipeline_ci.dynamicStateCount = 2;
+    pipeline_ci.pDynamicStates = states;
+
+    VkPipelineVertexInputStateCreateInfo vertex_ci = { 0 };
+    vertex_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo assembly_ci = { 0 };
+    assembly_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly_ci.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport viewport = { 0 };
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)swapchain_extent.x;
+    viewport.height = (float)swapchain_extent.y;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor = { 0 };
+    scissor.extent.width = swapchain_extent.x;
+    scissor.extent.height = swapchain_extent.y;
+
+    VkPipelineViewportStateCreateInfo viewport_state_ci = { 0 };
+    viewport_state_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state_ci.viewportCount = 1;
+    viewport_state_ci.pViewports = &viewport;
+    viewport_state_ci.scissorCount = 1;
+    viewport_state_ci.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer_ci = { 0 };
+    rasterizer_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer_ci.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer_ci.lineWidth = 1.0f;
+    rasterizer_ci.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer_ci.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling_ci = { 0 };
+    multisampling_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling_ci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling_ci.minSampleShading = 1.0f;
+
+    VkPipelineColorBlendAttachmentState blend_state = { 0 };
+    blend_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
+    /*
+    VkPipelineLayoutCreateInfo pipeline_layout_i{};
+    pipeline_layout_i.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    BS_VK_ERR(vkCreatePipelineLayout(device, &pipeline_layout_i, nullptr, &pipelineLayout), "Failed to create pipeline layout");
+    */
+}
+
+void bs_preparePipeline() {
+    bs_shader("tri_vs.spv", "tri_fs.spv");
 }
 
 void bs_prepareCommands() {
@@ -357,8 +500,7 @@ void bs_prepareCommands() {
     buffer_ci.commandBufferCount = 1;
     buffer_ci.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 
-    VkCommandBuffer buffer = { 0 };
-    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, &buffer), "Failed to allocate command buffers");
+    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, &command_buffer), "Failed to allocate command buffers");
 }
 
 void bs_prepareSynchronization() {
@@ -372,9 +514,49 @@ void bs_prepareSynchronization() {
 
     BS_VK_ERR(vkCreateFence(device, &fence_ci, NULL, &render_fence), "Failed to create fence");
 
-    VkSemaphore swapchain_semaphore, render_semaphore;
     BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, &swapchain_semaphore), "Failed to create semaphore");
     BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, &render_semaphore), "Failed to create semaphore");
+}
+
+void bs_tmpDraw() {
+    vkWaitForFences(device, 1, &render_fence, true, 1000000000);
+    vkResetFences(device, 1, &render_fence);
+
+    bs_U32 img_index;
+
+    BS_VK_ERR(vkAcquireNextImageKHR(device, swapchain, 1000000000, swapchain_semaphore, NULL, &img_index), "Could not acquire next image");
+    BS_VK_ERR(vkResetCommandBuffer(command_buffer, 0), "Could not reset command buffer");
+
+    // begin recording
+    VkCommandBufferBeginInfo record_i = { 0 };
+    record_i.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    record_i.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    BS_VK_ERR(vkBeginCommandBuffer(command_buffer, &record_i), "Failed to begin recording commands");
+    VkImageMemoryBarrier2 img_barrier = { 0 };
+    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    img_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    img_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    img_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    img_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+
+    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    img_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkImageSubresourceRange subresource_range = { 0 };
+    subresource_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource_range.levelCount = VK_REMAINING_MIP_LEVELS;
+    subresource_range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+    img_barrier.subresourceRange = subresource_range;
+    img_barrier.image = swapchain_imgs[img_index];
+
+    VkDependencyInfo dependency_i = { 0 };
+    dependency_i.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency_i.imageMemoryBarrierCount = 1;
+    dependency_i.pImageMemoryBarriers = &img_barrier;
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency_i);
 }
 
 void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
@@ -409,8 +591,10 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_selectPhysicalDevice();
     bs_prepareLogicalDevice();
     bs_prepareSwapchain();
+    bs_prepareImageViews();
     bs_prepareCommands();
     bs_prepareSynchronization();
+    bs_preparePipeline();
 }
 
 void bs_run(void (*tick)()) {
@@ -421,10 +605,7 @@ void bs_run(void (*tick)()) {
 
 		glfwPollEvents();
 
-		//vkWaitForFences(device, 1, &render_fence, true, 1000000000);
-    	//vkResetFences(device, 1, &render_fence);
-
-    	//vkAcquireNextImageKHR(device, )
+      //  tmpDraw();		
 
 		tick();
 

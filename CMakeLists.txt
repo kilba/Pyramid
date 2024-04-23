@@ -8,6 +8,7 @@ add_executable(${PROJECT_NAME}
 	src/main.c
 	src/bs/bs_ini.c
 	src/bs/bs_math.c
+	src/bs/bs_mem.c
 )
 
 target_include_directories(${PROJECT_NAME}

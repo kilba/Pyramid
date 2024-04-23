@@ -1,8 +1,6 @@
-#include <glad/glad.h>
-
 #include <bs_core.h>
 #include <bs_math.h>
-#include <bs_wnd.h>
+#include <bs_ini.h>
 
 #include <stddef.h>
 #include <stdio.h>
@@ -25,7 +23,7 @@ void* bs_free(void* p) {
 void* bs_alloc(bs_U32 size) {
     void* p = malloc(size);
     if (p == NULL) {
-        bs_callErrorf(BS_ERROR_MEM_ALLOCATION, 2, "malloc returned null");
+        bs_throw("malloc returned null");
     }
 
     return p;
@@ -34,7 +32,7 @@ void* bs_alloc(bs_U32 size) {
 void* bs_realloc(void* p, bs_U32 size) {
     p = realloc(p, size);
     if (p == NULL) {
-        bs_callErrorf(BS_ERROR_MEM_ALLOCATION, 2, "realloc returned null");
+        bs_throw("realloc returned null");
     }
 
     return p;
@@ -64,7 +62,7 @@ void bs_bufferResizeCheck(bs_Buffer* buf, bs_U32 num_units) {
     }
 
     if (buf->realloc_vram) {
-        glBufferData(buf->type, buf->capacity * buf->unit_size, buf->data, GL_DYNAMIC_DRAW);
+        //glBufferData(buf->type, buf->capacity * buf->unit_size, buf->data, GL_DYNAMIC_DRAW);
     }
 }
 
@@ -169,7 +167,7 @@ char* bs_replaceFirstSubstring(const char* str, const char* old_str, const char*
 
 char* bs_loadFile(const char* path, int* content_len) {
     if (path == NULL) {
-        bs_callErrorf(BS_ERROR_MEM_PATH_NOT_FOUND, 2, "File \"%s\" not found");
+        bs_throw("File \"%s\" not found");
         return NULL;
     }
 
@@ -189,7 +187,7 @@ char* bs_loadFile(const char* path, int* content_len) {
 
         fclose (f);
     } else {
-        bs_callErrorf(BS_ERROR_MEM_FAILED_TO_READ, 2, "Failed to read file \"%s\"", path);
+        bs_throw("Failed to read file \"%s\"", path);
         return NULL;
     }
 
@@ -217,13 +215,13 @@ void bs_writeToFile(const char *filepath, const char *data) {
 void bs_writeBuffer(const char* file_path, void* buffer, bs_U64 size) {
     FILE* file = fopen(file_path, "wb");
     if (file == NULL) {
-        bs_callErrorf(BS_ERROR_MEM_PATH_NOT_FOUND, 2, "Failed to open file \"%s\"", file_path);
+        bs_throw("Failed to open file");
         return 1;
     }
 
     size_t written = fwrite(buffer, sizeof(char), size, file);
     if (written < size) {
-        bs_callErrorf(BS_ERROR_MEM, 2, "Failed to write the full buffer \"%s\", (%d, %d)", file_path, written, size);
+        bs_throw("Failed to write the full buffer");
         fclose(file);
         return 1;
     }

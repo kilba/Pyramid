@@ -8,6 +8,16 @@
         "bs_ini.h": "c",
         "vulkan.h": "c",
         "bs_math.h": "c",
-        "format": "c"
+        "format": "c",
+        "stdint.h": "c",
+        "stdio.h": "c",
+        "array": "c",
+        "initializer_list": "c",
+        "span": "c",
+        "type_traits": "c",
+        "vector": "c",
+        "xstring": "c",
+        "xutility": "c",
+        "xlocale": "c"
     }
 }

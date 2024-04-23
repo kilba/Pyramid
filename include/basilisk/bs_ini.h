@@ -4,6 +4,7 @@
 #include <bs_types.h>
 #include <windows.h>
 
+void bs_throw(const char* message);
 void bs_ini(bs_U32 width, bs_U32 height, const char* name);
 void bs_run(void (*tick)());
 void bs_exit();
