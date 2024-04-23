@@ -44,12 +44,8 @@ float bs_fsign(float x) {
 }
 
 float bs_clamp(float v, float min, float max) {
-    if (v < min)
-        return min;
-
-    if (v > max)
-        return max;
-
+    if (v < min) return min;
+    if (v > max) return max;
     return v;
 }
 

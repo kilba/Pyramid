@@ -7,6 +7,7 @@
         "system_error": "c",
         "bs_ini.h": "c",
         "vulkan.h": "c",
-        "bs_math.h": "c"
+        "bs_math.h": "c",
+        "format": "c"
     }
 }
