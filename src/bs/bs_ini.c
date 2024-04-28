@@ -25,6 +25,7 @@ typedef struct {
 struct {
 	GLFWwindow* glfw;
 	bool second_input_poll;
+    bool resized;
 } window = { 0 };
 
 bs_WindowFrameData frame = { 0 };
@@ -111,6 +112,47 @@ static void bs_glfwInputCallback(GLFWwindow* glfw, int key, int scancode, int ac
 	else if (action == GLFW_RELEASE) {
 		frame.key_states[key] = false;
 	}
+}
+
+void bs_cleanupSwapChain() {
+    for (size_t i = 0; i < num_swapchain_imgs; i++) {
+        vkDestroyFramebuffer(device, swapchain_framebufs[i], NULL);
+    }
+
+    for (size_t i = 0; i < num_swapchain_imgs; i++) {
+        vkDestroyImageView(device, swapchain_img_views[i], NULL);
+    }
+
+    vkDestroySwapchainKHR(device, swapchain, NULL);
+}
+
+void bs_cleanup() {
+    bs_cleanupSwapChain();
+
+    vkDestroyPipeline(device, graphics_pipeline, NULL);
+    vkDestroyPipelineLayout(device, pipeline_layout, NULL);
+
+    vkDestroyRenderPass(device, render_pass, NULL);
+
+    for (size_t i = 0; i < BS_MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroySemaphore(device, render_semaphores[i], NULL);
+        vkDestroySemaphore(device, swapchain_semaphores[i], NULL);
+        vkDestroyFence(device, render_fences[i], NULL);
+    }
+
+    // vkDestroyCommandPool(device, cmd_pool, NULL);
+
+    vkDestroyDevice(device, NULL);
+
+    if (enable_validation_layers) {
+        // DestroyDebugUtilsMessengerEXT(instance, debug_messenger, NULL);
+    }
+
+    vkDestroySurfaceKHR(instance, surface, NULL);
+    vkDestroyInstance(instance, NULL);
+
+    //glfwDestroyWindow(window);
+    //glfwTerminate();
 }
 
 QueueFamilyIndices bs_findQueueFamilies() {
@@ -296,6 +338,9 @@ void bs_prepareLogicalDevice() {
 }
 
 void bs_prepareSwapchain() {
+    free(swapchain_img_views);
+    free(swapchain_imgs);
+
     VkSurfaceCapabilitiesKHR capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
@@ -352,9 +397,6 @@ void bs_prepareSwapchain() {
 		}
 	}
 
-    swapchain_img_format = swapchain_ci.imageFormat;
-    swapchain_img_views = malloc(num_swapchain_imgs * sizeof(VkImageView));
-
 	for(int i = 0; i < num_modes; i++) {
 		if(modes[i] == VK_PRESENT_MODE_FIFO_KHR) {
 			// VK_PRESENT_MODE_FIFO_KHR = double buffering
@@ -375,7 +417,11 @@ void bs_prepareSwapchain() {
     swapchain_imgs = malloc(num_swapchain_imgs * sizeof(VkImage));
     vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_imgs, swapchain_imgs);
 
-	//free(formats);
+    swapchain_img_views = malloc(num_swapchain_imgs * sizeof(VkImageView));
+    swapchain_img_format = swapchain_ci.imageFormat;
+
+	free(formats);
+	free(modes);
 }
 
 void bs_prepareImageViews() {
@@ -552,6 +598,7 @@ void bs_prepareRenderPass() {
 }
 
 void bs_prepareFramebuffer() {
+    free(swapchain_framebufs);
     swapchain_framebufs = malloc(num_swapchain_imgs * sizeof(VkFramebuffer));
 
     for(int i = 0; i < num_swapchain_imgs; i++) {
@@ -649,14 +696,37 @@ void bs_prepareSynchronization() {
     }
 }
 
-void bs_tmpDraw() {
+void bs_recreateSwapchain() {
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window.glfw, &width, &height);
+    while (width == 0 || height == 0) {
+        glfwGetFramebufferSize(window.glfw, &width, &height);
+        glfwWaitEvents();
+    }
 
+    vkDeviceWaitIdle(device);
+
+    bs_cleanupSwapChain();
+
+    bs_prepareSwapchain();
+    bs_prepareImageViews();
+    bs_prepareFramebuffer();
+}
+
+void bs_tmpDraw() {
     vkWaitForFences(device, 1, render_fences + current_frame, VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, render_fences + current_frame);
 
     uint32_t img_idx;
-    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, swapchain_semaphores[current_frame], VK_NULL_HANDLE, &img_idx);
+    VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, swapchain_semaphores[current_frame], VK_NULL_HANDLE, &img_idx);
 
+    if(result == VK_ERROR_OUT_OF_DATE_KHR) {
+        bs_recreateSwapchain();
+        return;
+    } else if(result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        bs_throw("Failed to acquire swapchain image");
+    }
+
+    vkResetFences(device, 1, render_fences + current_frame);
     vkResetCommandBuffer(command_buffers[current_frame], 0);
     bs_recordCommands(command_buffers[current_frame], img_idx);
 
@@ -694,11 +764,18 @@ void bs_tmpDraw() {
     present_i.pSwapchains = swapchains;
     present_i.pImageIndices = &img_idx;
 
-    vkQueuePresentKHR(present_queue, &present_i);
+    result = vkQueuePresentKHR(present_queue, &present_i);
+    if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || window.resized) {
+        window.resized = false;
+        bs_recreateSwapchain();
+    } else if(result != VK_SUCCESS) {
+        bs_throw("Failed to acquire swapchain image");
+    }
 
     current_frame = (current_frame + 1) % BS_MAX_FRAMES_IN_FLIGHT;
 }
 
+static void bs_glfwResizeCallback(GLFWwindow* window, int width, int height);
 void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
 	assert(CHAR_BIT * sizeof(float) == 32);
 	assert(CHAR_BIT * sizeof(char) == 8);
@@ -721,6 +798,7 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
 	}
 
 	glfwSetKeyCallback(window.glfw, bs_glfwInputCallback);
+    glfwSetFramebufferSizeCallback(window.glfw, bs_glfwResizeCallback);
 	glfwSwapInterval(1);
 
 	// vulkan
@@ -762,6 +840,10 @@ void bs_run(void (*tick)()) {
 	}
 
 	glfwTerminate();
+}
+
+static void bs_glfwResizeCallback(GLFWwindow* glfw, int width, int height) {
+    window.resized = true;
 }
 
 void bs_exit() {
