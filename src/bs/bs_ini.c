@@ -47,20 +47,28 @@ void bs_throwVk(const char* message, VkResult result) {
         } \
     } while(0)
 
-VkInstance instance;
-VkSurfaceKHR surface;
+VkInstance instance = VK_NULL_HANDLE;
+VkSurfaceKHR surface = VK_NULL_HANDLE;
 
 VkPhysicalDeviceFeatures device_features = {0};
 VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-VkDevice device;
+VkDevice device = VK_NULL_HANDLE;
 
-VkQueue present_queue;
+VkQueue present_queue = VK_NULL_HANDLE;
+VkQueue graphics_queue = VK_NULL_HANDLE;
 
-VkFence render_fence;
-VkSwapchainKHR swapchain;
-VkSemaphore swapchain_semaphore, render_semaphore;
+VkFence* render_fences = NULL;
+VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+VkSemaphore* swapchain_semaphores = NULL, *render_semaphores = NULL;
 
-bs_ivec2 swapchain_extent = bs_iv2s(0);
+bs_ivec2 swapchain_extent = { 0, 0 };
+VkFramebuffer* swapchain_framebufs = NULL;
+
+VkRenderPass render_pass = VK_NULL_HANDLE;
+VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+VkAttachmentDescription color_attachment = { 0 };
+
+VkPipeline graphics_pipeline = VK_NULL_HANDLE;
 
 VkImageView* swapchain_img_views = NULL;
 VkImage* swapchain_imgs = NULL;
@@ -68,7 +76,9 @@ bs_U32 num_swapchain_imgs = 0;
 
 VkFormat swapchain_img_format;
 
-VkCommandBuffer command_buffer = { 0 };
+VkCommandBuffer* command_buffers = NULL;
+
+#define BS_MAX_FRAMES_IN_FLIGHT 2
 
 typedef struct {
     uint32_t family_count;
@@ -129,7 +139,7 @@ QueueFamilyIndices bs_findQueueFamilies() {
         }
     }
 
-    free(queue_families);
+    //free(queue_families);
 
     return indices;
 }
@@ -162,7 +172,7 @@ bool bs_checkValidationLayerSupport() {
         }
     }
 
-    free(layers);
+    //free(layers);
 
     return true;
 }
@@ -219,7 +229,7 @@ void bs_selectPhysicalDevice() {
         }
     }
 
-    free(devices);
+    //free(devices);
 
     if(physical_device == VK_NULL_HANDLE) {
         printf("Failed to find a suitable GPU!\n");
@@ -279,9 +289,10 @@ void bs_prepareLogicalDevice() {
 
     BS_VK_ERR(vkCreateDevice(physical_device, &ci, NULL, &device), "Failed to create logical device");
 
-    free(queue_cis);
+    //free(queue_cis);
 
     vkGetDeviceQueue(device, queue_family_indices.present_family, 0, &present_queue);
+    vkGetDeviceQueue(device, queue_family_indices.graphics_family, 0, &graphics_queue);
 }
 
 void bs_prepareSwapchain() {
@@ -364,7 +375,7 @@ void bs_prepareSwapchain() {
     swapchain_imgs = malloc(num_swapchain_imgs * sizeof(VkImage));
     vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_imgs, swapchain_imgs);
 
-	free(formats);
+	//free(formats);
 }
 
 void bs_prepareImageViews() {
@@ -390,7 +401,7 @@ VkShaderModule bs_spirv(const char* path) {
 
     VkShaderModuleCreateInfo shader_ci = { 0 };
     shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_ci.codeSize = len;
+    shader_ci.codeSize = len - 1;
     shader_ci.pCode = spirv;
 
     BS_VK_ERR(vkCreateShaderModule(device, &shader_ci, NULL, &module), "Failed to load spir-v");
@@ -414,19 +425,20 @@ void bs_shaderv(const char* vs_path, const char* fs_path) {
     fs_ci.module = fs;
     fs_ci.pName = "main";
 
-    vkDestroyShaderModule(device, vs, NULL);
-    vkDestroyShaderModule(device, fs, NULL);
-
     // pipeline
     VkDynamicState states[] = { 
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR
     };
 
-    VkPipelineDynamicStateCreateInfo pipeline_ci = { 0 };
-    pipeline_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    pipeline_ci.dynamicStateCount = 2;
-    pipeline_ci.pDynamicStates = states;
+    VkPipelineLayoutCreateInfo pipeline_layout_i = { 0 };
+    pipeline_layout_i.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    BS_VK_ERR(vkCreatePipelineLayout(device, &pipeline_layout_i, NULL, &pipeline_layout), "Failed to create pipeline layout");
+
+    VkPipelineDynamicStateCreateInfo dynamic_state_i = { 0 };
+    dynamic_state_i.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_i.dynamicStateCount = sizeof(states) / sizeof(VkDynamicState);
+    dynamic_state_i.pDynamicStates = states;
 
     VkPipelineVertexInputStateCreateInfo vertex_ci = { 0 };
     vertex_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -474,15 +486,129 @@ void bs_shaderv(const char* vs_path, const char* fs_path) {
     blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
-    /*
-    VkPipelineLayoutCreateInfo pipeline_layout_i{};
-    pipeline_layout_i.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    BS_VK_ERR(vkCreatePipelineLayout(device, &pipeline_layout_i, nullptr, &pipelineLayout), "Failed to create pipeline layout");
-    */
+    blend_state.blendEnable = VK_TRUE;
+    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo color_blending_ci = { 0 };
+    color_blending_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blending_ci.logicOp = VK_LOGIC_OP_COPY;
+    color_blending_ci.attachmentCount = 1;
+    color_blending_ci.pAttachments = &blend_state;
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = { vs_ci, fs_ci };
+    VkGraphicsPipelineCreateInfo pipeline_ci = { 0 };
+    pipeline_ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.stageCount = 2;
+    pipeline_ci.pStages = shader_stages;
+    pipeline_ci.pVertexInputState = &vertex_ci;
+    pipeline_ci.pInputAssemblyState = &assembly_ci;
+    pipeline_ci.pViewportState = &viewport_state_ci;
+    pipeline_ci.pRasterizationState = &rasterizer_ci;
+    pipeline_ci.pMultisampleState = &multisampling_ci;
+    pipeline_ci.pColorBlendState = &color_blending_ci;
+    pipeline_ci.pDynamicState = &dynamic_state_i;
+    pipeline_ci.layout = pipeline_layout;
+    pipeline_ci.renderPass = render_pass;
+    pipeline_ci.subpass = 0;
+    pipeline_ci.basePipelineIndex = -1;
+
+    BS_VK_ERR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, NULL, &graphics_pipeline), "Failed to create graphics pipeline");
+
+    vkDestroyShaderModule(device, vs, NULL);
+    vkDestroyShaderModule(device, fs, NULL);
+}
+
+void bs_prepareRenderPass() {
+    color_attachment.format = swapchain_img_format;
+    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference color_attachment_ref = { 0 };
+    color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass = { 0 };
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment_ref;
+
+    VkRenderPassCreateInfo render_pass_ci = { 0 };
+    render_pass_ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_ci.attachmentCount = 1;
+    render_pass_ci.pAttachments = &color_attachment;
+    render_pass_ci.subpassCount = 1;
+    render_pass_ci.pSubpasses = &subpass;
+
+    BS_VK_ERR(vkCreateRenderPass(device, &render_pass_ci, NULL, &render_pass), "Failed to create render pass");
+}
+
+void bs_prepareFramebuffer() {
+    swapchain_framebufs = malloc(num_swapchain_imgs * sizeof(VkFramebuffer));
+
+    for(int i = 0; i < num_swapchain_imgs; i++) {
+        VkFramebufferCreateInfo framebuf_ci = { 0 };
+        framebuf_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuf_ci.renderPass = render_pass;
+        framebuf_ci.attachmentCount = 1;
+        framebuf_ci.pAttachments = swapchain_img_views + i;
+        framebuf_ci.width = swapchain_extent.x;
+        framebuf_ci.height = swapchain_extent.y;
+        framebuf_ci.layers = 1;
+
+        BS_VK_ERR(vkCreateFramebuffer(device, &framebuf_ci, NULL, swapchain_framebufs + i), "Failed to create framebuffer");
+    }
 }
 
 void bs_preparePipeline() {
-    bs_shader("tri_vs.spv", "tri_fs.spv");
+    bs_shaderv("tri_vs.spv", "tri_fs.spv");
+}
+
+bs_U32 current_frame = 0;
+void bs_recordCommands(VkCommandBuffer cmd_buf, int img_idx) {
+    VkCommandBufferBeginInfo ci = { 0 };
+    ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    BS_VK_ERR(vkBeginCommandBuffer(cmd_buf, &ci), "Failed to begin recording");
+
+    VkRenderPassBeginInfo render_pass_i = { 0 };
+    render_pass_i.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_i.renderPass = render_pass;
+    render_pass_i.framebuffer = swapchain_framebufs[img_idx];
+    render_pass_i.renderArea.extent.width = swapchain_extent.x;
+    render_pass_i.renderArea.extent.height = swapchain_extent.y;
+
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    render_pass_i.clearValueCount = 1;
+    render_pass_i.pClearValues = &clearColor;
+    vkCmdBeginRenderPass(cmd_buf, &render_pass_i, VK_SUBPASS_CONTENTS_INLINE);
+
+    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+    VkViewport viewport = { 0 };
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = swapchain_extent.x;
+    viewport.height = swapchain_extent.y;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+    VkRect2D scissor = { 0 };
+    scissor.extent.width = swapchain_extent.x;
+    scissor.extent.height = swapchain_extent.y;
+    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+
+    vkCmdDraw(cmd_buf, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(cmd_buf);
+    BS_VK_ERR(vkEndCommandBuffer(cmd_buf), "Failed to record commands");
 }
 
 void bs_prepareCommands() {
@@ -494,69 +620,83 @@ void bs_prepareCommands() {
     VkCommandPool pool;
     BS_VK_ERR(vkCreateCommandPool(device, &pool_ci, NULL, &pool), "Failed to create a command pool");
 
+    command_buffers = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkCommandBuffer));
+
     VkCommandBufferAllocateInfo buffer_ci = { 0 };
     buffer_ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     buffer_ci.commandPool = pool;
-    buffer_ci.commandBufferCount = 1;
+    buffer_ci.commandBufferCount = BS_MAX_FRAMES_IN_FLIGHT;
     buffer_ci.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-
-    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, &command_buffer), "Failed to allocate command buffers");
+    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, command_buffers), "Failed to allocate command buffers");
 }
 
 void bs_prepareSynchronization() {
     VkFenceCreateInfo fence_ci = { 0 };
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    
+
     VkSemaphoreCreateInfo semaphore_ci = { 0 };
     semaphore_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    semaphore_ci.flags = 0;
 
-    BS_VK_ERR(vkCreateFence(device, &fence_ci, NULL, &render_fence), "Failed to create fence");
+    swapchain_semaphores = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkSemaphore));
+    render_semaphores = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkSemaphore));
+    render_fences = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkFence));
 
-    BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, &swapchain_semaphore), "Failed to create semaphore");
-    BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, &render_semaphore), "Failed to create semaphore");
+    for(int i = 0; i < BS_MAX_FRAMES_IN_FLIGHT; i++) {
+        BS_VK_ERR(vkCreateFence(device, &fence_ci, NULL, render_fences + i), "Failed to create fence");
+        BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, swapchain_semaphores + i), "Failed to create semaphore");
+        BS_VK_ERR(vkCreateSemaphore(device, &semaphore_ci, NULL, render_semaphores + i), "Failed to create semaphore");
+    }
 }
 
 void bs_tmpDraw() {
-    vkWaitForFences(device, 1, &render_fence, true, 1000000000);
-    vkResetFences(device, 1, &render_fence);
 
-    bs_U32 img_index;
+    vkWaitForFences(device, 1, render_fences + current_frame, VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, render_fences + current_frame);
 
-    BS_VK_ERR(vkAcquireNextImageKHR(device, swapchain, 1000000000, swapchain_semaphore, NULL, &img_index), "Could not acquire next image");
-    BS_VK_ERR(vkResetCommandBuffer(command_buffer, 0), "Could not reset command buffer");
+    uint32_t img_idx;
+    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, swapchain_semaphores[current_frame], VK_NULL_HANDLE, &img_idx);
 
-    // begin recording
-    VkCommandBufferBeginInfo record_i = { 0 };
-    record_i.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    record_i.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(command_buffers[current_frame], 0);
+    bs_recordCommands(command_buffers[current_frame], img_idx);
 
-    BS_VK_ERR(vkBeginCommandBuffer(command_buffer, &record_i), "Failed to begin recording commands");
-    VkImageMemoryBarrier2 img_barrier = { 0 };
-    img_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    img_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    img_barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    img_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    img_barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+    VkSemaphore wait_semaphores[] = { swapchain_semaphores[current_frame] };
+    VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkSemaphore signal_semaphores[] = { render_semaphores[current_frame] };
 
-    img_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    img_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkSubmitInfo submit_i = { 0 };
+    submit_i.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_i.waitSemaphoreCount = 1;
+    submit_i.pWaitSemaphores = wait_semaphores;
+    submit_i.pSignalSemaphores = signal_semaphores;
+    submit_i.signalSemaphoreCount = 1;
+    submit_i.pWaitDstStageMask = wait_stages;
+    submit_i.commandBufferCount = 1;
+    submit_i.pCommandBuffers = command_buffers + current_frame;
 
-    VkImageSubresourceRange subresource_range = { 0 };
-    subresource_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    subresource_range.levelCount = VK_REMAINING_MIP_LEVELS;
-    subresource_range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+    BS_VK_ERR(vkQueueSubmit(graphics_queue, 1, &submit_i, render_fences[current_frame]), "Failed to submit queue");
+    VkSubpassDependency dependency = { 0 };
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    img_barrier.subresourceRange = subresource_range;
-    img_barrier.image = swapchain_imgs[img_index];
+    VkRenderPassCreateInfo render_pass_info;
+    render_pass_info.dependencyCount = 1;
+    render_pass_info.pDependencies = &dependency;
 
-    VkDependencyInfo dependency_i = { 0 };
-    dependency_i.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependency_i.imageMemoryBarrierCount = 1;
-    dependency_i.pImageMemoryBarriers = &img_barrier;
+    VkSwapchainKHR swapchains[] = { swapchain };
+    VkPresentInfoKHR present_i = { 0 };
+    present_i.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_i.waitSemaphoreCount = 1;
+    present_i.pWaitSemaphores = signal_semaphores;
+    present_i.swapchainCount = 1;
+    present_i.pSwapchains = swapchains;
+    present_i.pImageIndices = &img_idx;
 
-    vkCmdPipelineBarrier2(command_buffer, &dependency_i);
+    vkQueuePresentKHR(present_queue, &present_i);
+
+    current_frame = (current_frame + 1) % BS_MAX_FRAMES_IN_FLIGHT;
 }
 
 void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
@@ -592,9 +732,16 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_prepareLogicalDevice();
     bs_prepareSwapchain();
     bs_prepareImageViews();
+    bs_prepareRenderPass();
+    bs_prepareFramebuffer();
+    bs_preparePipeline();
     bs_prepareCommands();
     bs_prepareSynchronization();
-    bs_preparePipeline();
+
+    // vKDestroyPipelineLayout
+    // vKDestroyRenderPass
+    // vKDestroyFramebuffer
+    // vkDestroyCommandPool
 }
 
 void bs_run(void (*tick)()) {
@@ -605,7 +752,7 @@ void bs_run(void (*tick)()) {
 
 		glfwPollEvents();
 
-      //  tmpDraw();		
+        bs_tmpDraw();		
 
 		tick();
 

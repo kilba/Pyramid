@@ -65,3 +65,4 @@ _deps
 
 .cache/*
 external/*.lib
+build
