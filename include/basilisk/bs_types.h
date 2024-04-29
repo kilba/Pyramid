@@ -578,7 +578,7 @@ struct bs_Batch {
 
     bs_U32 VAO, VBO, EBO;
 
-    void* vbuffer;
+    void* vbuffer, *ibuffer;
 };
 
 struct bs_Quad {

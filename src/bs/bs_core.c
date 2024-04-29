@@ -138,37 +138,115 @@ static bs_U32 bs_queryMemoryType(uint32_t filter, VkMemoryPropertyFlags props) {
     bs_throw("Failed to find memory type");
 }
 
-void bs_pushBatch() {
-    assert(selected.batch != NULL);
-
+void bs_prepareBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, VkDeviceMemory* buffer_mem) {
     VkBufferCreateInfo buffer_i = { 0 };
     buffer_i.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_i.size = selected.batch->vertex_buf.num_units * selected.batch->vertex_buf.unit_size;
-    buffer_i.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buffer_i.size = size;
+    buffer_i.usage = usage;
     buffer_i.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkBuffer vertex_buffer;
-    BS_VK_ERR(vkCreateBuffer(bs_vkDevice(), &buffer_i, NULL, &vertex_buffer), "Failed to create vertex buffer");
+    BS_VK_ERR(vkCreateBuffer(bs_vkDevice(), &buffer_i, NULL, buffer), "Failed to create buffer");
 
     VkMemoryRequirements mem_req;
-    vkGetBufferMemoryRequirements(bs_vkDevice(), vertex_buffer, &mem_req);
+    vkGetBufferMemoryRequirements(bs_vkDevice(), *buffer, &mem_req);
 
     VkMemoryAllocateInfo alloc_i = { 0 };
     alloc_i.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_i.allocationSize = mem_req.size;
-    alloc_i.memoryTypeIndex = bs_queryMemoryType(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    alloc_i.memoryTypeIndex = bs_queryMemoryType(mem_req.memoryTypeBits, properties);
 
-    VkDeviceMemory memory;
-    BS_VK_ERR(vkAllocateMemory(bs_vkDevice(), &alloc_i, NULL, &memory), "Failed to allocate memory");
+    BS_VK_ERR(vkAllocateMemory(bs_vkDevice(), &alloc_i, NULL, buffer_mem), "Failed to allocate buffer memory");
 
-    vkBindBufferMemory(bs_vkDevice(), vertex_buffer, memory, 0);
+    vkBindBufferMemory(bs_vkDevice(), *buffer, *buffer_mem, 0);
+}
+
+void bs_copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+    VkCommandBufferAllocateInfo alloc_i = { 0 };
+    alloc_i.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_i.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_i.commandPool = bs_vkCmdPool();
+    alloc_i.commandBufferCount = 1;
+
+    VkCommandBuffer command_buffer;
+    vkAllocateCommandBuffers(bs_vkDevice(), &alloc_i, &command_buffer);
+
+    VkCommandBufferBeginInfo begin_i = { 0 };
+    begin_i.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_i.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(command_buffer, &begin_i);
+
+    VkBufferCopy region = { 0 };
+    region.size = size;
+    vkCmdCopyBuffer(command_buffer, srcBuffer, dstBuffer, 1, &region);
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_i = { 0 };
+    submit_i.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_i.commandBufferCount = 1;
+    submit_i.pCommandBuffers = &command_buffer;
+
+    vkQueueSubmit(bs_vkGraphicsQueue(), 1, &submit_i, VK_NULL_HANDLE);
+    vkQueueWaitIdle(bs_vkGraphicsQueue());
+    vkFreeCommandBuffers(bs_vkDevice(), bs_vkCmdPool(), 1, &command_buffer);
+}
+
+void bs_pushBatch() {
+    assert(selected.batch != NULL);
+
+    bs_U32 vertex_size = selected.batch->vertex_buf.num_units * selected.batch->vertex_buf.unit_size;
+    bs_U32 index_size = selected.batch->index_buf.num_units * selected.batch->index_buf.unit_size;
+
+    // staging buffer
+    VkBuffer staging_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+
+    bs_prepareBuffer(
+        vertex_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+        &staging_buffer, &staging_memory
+    );
 
     void* data;
-    vkMapMemory(bs_vkDevice(), memory, 0, buffer_i.size, 0, &data);
-    memcpy(data, selected.batch->vertex_buf.data, buffer_i.size);
-    vkUnmapMemory(bs_vkDevice(), memory);
+    vkMapMemory(bs_vkDevice(), staging_memory, 0, vertex_size, 0, &data);
+    memcpy(data, selected.batch->vertex_buf.data, vertex_size);
+    vkUnmapMemory(bs_vkDevice(), staging_memory);
+
+    // vertex buffer
+    VkBuffer vertex_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
+
+    bs_prepareBuffer(
+        vertex_size, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        &vertex_buffer, &vertex_memory
+    );
+
+    bs_copyBuffer(staging_buffer, vertex_buffer, vertex_size);
+
+    // index buffer
+    VkBuffer index_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory index_memory = VK_NULL_HANDLE;
+
+    vkMapMemory(bs_vkDevice(), staging_memory, 0, index_size, 0, &data);
+    memcpy(data, selected.batch->index_buf.data, (size_t) index_size);
+    vkUnmapMemory(bs_vkDevice(), staging_memory);
+
+    bs_prepareBuffer(
+        index_size, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+        &index_buffer, &index_memory
+    );
+
+    bs_copyBuffer(staging_buffer, index_buffer, index_size);
+    vkDestroyBuffer(bs_vkDevice(), staging_buffer, NULL);
+    vkFreeMemory(bs_vkDevice(), staging_memory, NULL);
 
     selected.batch->vbuffer = vertex_buffer;
+    selected.batch->ibuffer = index_buffer;
 }
 
 void bs_selectBatch(bs_Batch* batch) {

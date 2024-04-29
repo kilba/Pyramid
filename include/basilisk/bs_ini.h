@@ -14,6 +14,8 @@
 void* bs_vkDevice();
 void* bs_vkPhysicalDevice();
 void* bs_vkRenderPass();
+void* bs_vkCmdPool();
+void* bs_vkGraphicsQueue();
 
 bs_ivec2 bs_swapchainExtents();
 void bs_throw(const char* message);

@@ -70,6 +70,7 @@ VkImage* swapchain_imgs = NULL;
 bs_U32 num_swapchain_imgs = 0;
 
 VkFormat swapchain_img_format;
+VkCommandPool command_pool;
 
 VkCommandBuffer* command_buffers = NULL;
 bs_Batch batch;
@@ -120,6 +121,14 @@ void* bs_vkDevice() {
 
 void* bs_vkPhysicalDevice() {
     return (void*)physical_device;
+}
+
+void* bs_vkCmdPool() {
+    return (void*)command_pool;
+}
+
+void* bs_vkGraphicsQueue() {
+    return (void*)graphics_queue;
 }
 
 bs_ivec2 bs_swapchainExtents() {
@@ -528,16 +537,17 @@ void bs_recordCommands(VkCommandBuffer cmd_buf, int img_idx) {
     viewport.maxDepth = 1.0f;
     vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
-    VkBuffer vertexBuffers[] = { batch.vbuffer };
-    VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(cmd_buf, 0, 1, vertexBuffers, offsets);
+    VkDeviceSize offsets[] = { 0 };
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &batch.vbuffer, offsets);
+    vkCmdBindIndexBuffer(cmd_buf, batch.ibuffer, 0, VK_INDEX_TYPE_UINT32);
 
     VkRect2D scissor = { 0 };
     scissor.extent.width = swapchain_extent.x;
     scissor.extent.height = swapchain_extent.y;
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
-    vkCmdDraw(cmd_buf, 3, 1, 0, 0);
+    //vkCmdDraw(cmd_buf, 3, 1, 0, 0);
+    vkCmdDrawIndexed(cmd_buf, batch.index_buf.num_units, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(cmd_buf);
     BS_VK_ERR(vkEndCommandBuffer(cmd_buf), "Failed to record commands");
@@ -549,14 +559,13 @@ void bs_prepareCommands() {
 	pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 	pool_ci.queueFamilyIndex = queue_family_indices.graphics_family;
 
-    VkCommandPool pool;
-    BS_VK_ERR(vkCreateCommandPool(device, &pool_ci, NULL, &pool), "Failed to create a command pool");
+    BS_VK_ERR(vkCreateCommandPool(device, &pool_ci, NULL, &command_pool), "Failed to create a command pool");
 
     command_buffers = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkCommandBuffer));
 
     VkCommandBufferAllocateInfo buffer_ci = { 0 };
     buffer_ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    buffer_ci.commandPool = pool;
+    buffer_ci.commandPool = command_pool;
     buffer_ci.commandBufferCount = BS_MAX_FRAMES_IN_FLIGHT;
     buffer_ci.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, command_buffers), "Failed to allocate command buffers");
@@ -697,6 +706,7 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_prepareImageViews();
     bs_prepareRenderPass();
     bs_prepareFramebuffer();
+    bs_prepareCommands();
 
     bs_VertexShader vs = bs_vertexShader("tri_vs.spv");
     bs_FragmentShader fs = bs_fragmentShader("tri_fs.spv");
@@ -708,7 +718,6 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_pushTriangle(bs_v3(0.0, -0.5, 0.0), bs_v3(0.5, 0.5, 0.0), bs_v3(-0.5, 0.5, 0.0), (bs_RGBA)BS_RED, NULL);
     bs_pushBatch();
 
-    bs_prepareCommands();
     bs_prepareSynchronization();
 
     // vKDestroyPipelineLayout
