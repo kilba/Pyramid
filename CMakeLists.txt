@@ -9,6 +9,8 @@ add_executable(${PROJECT_NAME}
 	src/bs/bs_ini.c
 	src/bs/bs_math.c
 	src/bs/bs_mem.c
+	src/bs/bs_core.c
+	src/bs/bs_shaders.c
 )
 
 target_include_directories(${PROJECT_NAME}

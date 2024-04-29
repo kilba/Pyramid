@@ -12,6 +12,7 @@
 #include <bs_math.h>
 #include <bs_ini.h>
 #include <bs_mem.h>
+#include <bs_shaders.h>
 
 typedef struct {
 	bs_vec2 resolution;
@@ -36,17 +37,10 @@ void bs_throw(const char* message) {
 	exit(1);
 }
 
-void bs_throwVk(const char* message, VkResult result) {
+void bs_throwVk(const char* message, bs_U32 result) {
 	printf("%s (%d)\n", message, result);
 	exit(1);
 }
-
-#define BS_VK_ERR(call, msg) \
-    do { \
-        if ((call) != VK_SUCCESS) { \
-            bs_throwVk(msg, call); \
-        } \
-    } while(0)
 
 VkInstance instance = VK_NULL_HANDLE;
 VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -78,7 +72,7 @@ bs_U32 num_swapchain_imgs = 0;
 VkFormat swapchain_img_format;
 
 VkCommandBuffer* command_buffers = NULL;
-
+bs_Batch batch;
 #define BS_MAX_FRAMES_IN_FLIGHT 2
 
 typedef struct {
@@ -91,6 +85,8 @@ typedef struct {
     bool present_family_is_valid;
 } QueueFamilyIndices;
 QueueFamilyIndices queue_family_indices;
+
+void* vk_handles = NULL;
 
 bool enable_validation_layers = true;
 const char *validation_layers[] = {
@@ -112,6 +108,25 @@ static void bs_glfwInputCallback(GLFWwindow* glfw, int key, int scancode, int ac
 	else if (action == GLFW_RELEASE) {
 		frame.key_states[key] = false;
 	}
+}
+
+void* bs_vkRenderPass() {
+    return (void*)render_pass;
+}
+
+void* bs_vkDevice() {
+    return (void*)device;
+}
+
+void* bs_vkPhysicalDevice() {
+    return (void*)physical_device;
+}
+
+bs_ivec2 bs_swapchainExtents() {
+    return swapchain_extent;
+}
+
+void bs_addVkHandle(void* handle) {
 }
 
 void bs_cleanupSwapChain() {
@@ -439,136 +454,6 @@ void bs_prepareImageViews() {
     }
 }
 
-VkShaderModule bs_spirv(const char* path) {
-    VkShaderModule module;
-
-    int len = 0;
-    const char* spirv = bs_loadFile(path, &len);
-
-    VkShaderModuleCreateInfo shader_ci = { 0 };
-    shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_ci.codeSize = len - 1;
-    shader_ci.pCode = spirv;
-
-    BS_VK_ERR(vkCreateShaderModule(device, &shader_ci, NULL, &module), "Failed to load spir-v");
-
-    return module;
-}
-
-void bs_shaderv(const char* vs_path, const char* fs_path) {
-    VkShaderModule vs = bs_spirv(vs_path);
-    VkShaderModule fs = bs_spirv(fs_path);
-
-    VkPipelineShaderStageCreateInfo vs_ci = { 0 };
-    vs_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vs_ci.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vs_ci.module = vs;
-    vs_ci.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fs_ci = { 0 };
-    fs_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fs_ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fs_ci.module = fs;
-    fs_ci.pName = "main";
-
-    // pipeline
-    VkDynamicState states[] = { 
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
-    };
-
-    VkPipelineLayoutCreateInfo pipeline_layout_i = { 0 };
-    pipeline_layout_i.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    BS_VK_ERR(vkCreatePipelineLayout(device, &pipeline_layout_i, NULL, &pipeline_layout), "Failed to create pipeline layout");
-
-    VkPipelineDynamicStateCreateInfo dynamic_state_i = { 0 };
-    dynamic_state_i.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state_i.dynamicStateCount = sizeof(states) / sizeof(VkDynamicState);
-    dynamic_state_i.pDynamicStates = states;
-
-    VkPipelineVertexInputStateCreateInfo vertex_ci = { 0 };
-    vertex_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    VkPipelineInputAssemblyStateCreateInfo assembly_ci = { 0 };
-    assembly_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    assembly_ci.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkViewport viewport = { 0 };
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = (float)swapchain_extent.x;
-    viewport.height = (float)swapchain_extent.y;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor = { 0 };
-    scissor.extent.width = swapchain_extent.x;
-    scissor.extent.height = swapchain_extent.y;
-
-    VkPipelineViewportStateCreateInfo viewport_state_ci = { 0 };
-    viewport_state_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport_state_ci.viewportCount = 1;
-    viewport_state_ci.pViewports = &viewport;
-    viewport_state_ci.scissorCount = 1;
-    viewport_state_ci.pScissors = &scissor;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer_ci = { 0 };
-    rasterizer_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer_ci.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer_ci.lineWidth = 1.0f;
-    rasterizer_ci.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer_ci.frontFace = VK_FRONT_FACE_CLOCKWISE;
-
-    VkPipelineMultisampleStateCreateInfo multisampling_ci = { 0 };
-    multisampling_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling_ci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    multisampling_ci.minSampleShading = 1.0f;
-
-    VkPipelineColorBlendAttachmentState blend_state = { 0 };
-    blend_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
-    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
-    blend_state.blendEnable = VK_TRUE;
-    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
-    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
-
-    VkPipelineColorBlendStateCreateInfo color_blending_ci = { 0 };
-    color_blending_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    color_blending_ci.logicOp = VK_LOGIC_OP_COPY;
-    color_blending_ci.attachmentCount = 1;
-    color_blending_ci.pAttachments = &blend_state;
-
-    VkPipelineShaderStageCreateInfo shader_stages[] = { vs_ci, fs_ci };
-    VkGraphicsPipelineCreateInfo pipeline_ci = { 0 };
-    pipeline_ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.stageCount = 2;
-    pipeline_ci.pStages = shader_stages;
-    pipeline_ci.pVertexInputState = &vertex_ci;
-    pipeline_ci.pInputAssemblyState = &assembly_ci;
-    pipeline_ci.pViewportState = &viewport_state_ci;
-    pipeline_ci.pRasterizationState = &rasterizer_ci;
-    pipeline_ci.pMultisampleState = &multisampling_ci;
-    pipeline_ci.pColorBlendState = &color_blending_ci;
-    pipeline_ci.pDynamicState = &dynamic_state_i;
-    pipeline_ci.layout = pipeline_layout;
-    pipeline_ci.renderPass = render_pass;
-    pipeline_ci.subpass = 0;
-    pipeline_ci.basePipelineIndex = -1;
-
-    BS_VK_ERR(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, NULL, &graphics_pipeline), "Failed to create graphics pipeline");
-
-    vkDestroyShaderModule(device, vs, NULL);
-    vkDestroyShaderModule(device, fs, NULL);
-}
-
 void bs_prepareRenderPass() {
     color_attachment.format = swapchain_img_format;
     color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -615,10 +500,6 @@ void bs_prepareFramebuffer() {
     }
 }
 
-void bs_preparePipeline() {
-    bs_shaderv("tri_vs.spv", "tri_fs.spv");
-}
-
 bs_U32 current_frame = 0;
 void bs_recordCommands(VkCommandBuffer cmd_buf, int img_idx) {
     VkCommandBufferBeginInfo ci = { 0 };
@@ -646,6 +527,10 @@ void bs_recordCommands(VkCommandBuffer cmd_buf, int img_idx) {
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
     vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+    VkBuffer vertexBuffers[] = { batch.vbuffer };
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, vertexBuffers, offsets);
 
     VkRect2D scissor = { 0 };
     scissor.extent.width = swapchain_extent.x;
@@ -812,7 +697,17 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_prepareImageViews();
     bs_prepareRenderPass();
     bs_prepareFramebuffer();
-    bs_preparePipeline();
+
+    bs_VertexShader vs = bs_vertexShader("tri_vs.spv");
+    bs_FragmentShader fs = bs_fragmentShader("tri_fs.spv");
+
+    bs_Pipeline pipeline = bs_pipeline(&vs, &fs);
+    graphics_pipeline = pipeline.state;
+    batch = bs_batch(&pipeline);
+    bs_selectBatch(&batch);
+    bs_pushTriangle(bs_v3(0.0, -0.5, 0.0), bs_v3(0.5, 0.5, 0.0), bs_v3(-0.5, 0.5, 0.0), (bs_RGBA)BS_RED, NULL);
+    bs_pushBatch();
+
     bs_prepareCommands();
     bs_prepareSynchronization();
 

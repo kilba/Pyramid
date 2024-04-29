@@ -18,6 +18,10 @@ typedef uint8_t  bs_U8, bs_ubyte;
 
 bs_JsonString bs_string(const char* str);
 
+
+void* bs_memmem(const void *haystack, bs_U32 haystack_len, 
+    const void * const needle, const bs_U32 needle_len);
+
 void* bs_free(void* p);
 void* bs_alloc(bs_U32 size);
 void* bs_realloc(void* p, bs_U32 size);
@@ -26,7 +30,7 @@ void* bs_bufferAppend(bs_Buffer* buf, void* data);
 void* bs_bufferData(bs_Buffer* buf, bs_U32 offset);
 void bs_bufferAppendRange(bs_Buffer* buf, void* data, size_t num_units);
 void bs_bufferResizeCheck(bs_Buffer* buf, bs_U32 num_units);
-bs_Buffer bs_buffer(bs_U32 type, bs_U32 unit_size, bs_U32 increment, bs_U32 pre_malloc, bs_U32 max_units);
+bs_Buffer bs_buffer(bs_U32 unit_size, bs_U32 increment, bs_U32 pre_malloc, bs_U32 max_units);
 bs_Buffer bs_singleUnitBuffer(void* data, bs_U32 unit_size);
 
 bs_U8 bs_memU8 (void *data, bs_U32 offset);

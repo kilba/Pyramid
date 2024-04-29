@@ -1,13 +1,10 @@
-// GL
-#include <glad/glad.h>
-#include <cglm/cglm.h>
-
 // Basilisk
 #include <bs_mem.h>
 #include <bs_core.h>
 #include <bs_shaders.h>
 #include <bs_textures.h>
-#include <bs_wnd.h>
+#include <bs_ini.h>
+#include <bs_types.h>
 
 // STD
 #include <stdbool.h>
@@ -16,216 +13,36 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
-bs_Buffer shader_entity_buf;
-bs_Buffer shader_entity_data_buf;
-bs_Space entity_shader_space;
+#include <vulkan.h>
 
-const char* global_shader = NULL;
-int global_shader_len = 0;
-
-// Space Communication-
-void bs_pushShaderBuffers() {
-    shader_entity_buf = bs_buffer(0, sizeof(bs_ShaderEntity), 16, 0, 0);
-    shader_entity_data_buf = bs_buffer(0, sizeof(bs_ShaderEntityData), 16, 0, 0);
-
-    // Temporary until #include system is implemented
-    global_shader = bs_loadFile("resources/basilisk.bsh", &global_shader_len);
-}
-
-void bs_pushShaderSpaces() {
-    entity_shader_space = bs_shaderSpace(shader_entity_data_buf, BS_SPACE_ENTITIES, BS_STD430);
-}
-//-Space Communication
-
-bs_ShaderEntity* bs_pushShaderEntity(bs_mat4 transformation) {
-    bs_ShaderEntity* entity = bs_bufferAppend(&shader_entity_buf, NULL);
-    bs_ShaderEntityData* entity_data = bs_bufferAppend(&shader_entity_data_buf, NULL);
-
-    memset(entity, 0, sizeof(bs_ShaderEntity));
-    memset(entity_data, 0, sizeof(bs_ShaderEntityData));
-
-    entity_data->transform = transformation;
-    entity->entity_data = entity_data;
-    entity->buffer_location = shader_entity_buf.size - 1;
-
-    return entity;
-}
-
-void bs_pushEntityShaderDataBuffer() {
-    bs_U32 first = 0;
-    bs_U32 last = 0xFFFFFFFF;
-
-    for (int i = 0; i < shader_entity_buf.size; i++) {
-        bs_ShaderEntity* entity = bs_bufferData(&shader_entity_buf, i);
-        first = i;
-
-        if (entity->changed) {
-            first = i;
-            break;
-        }
-    }
-
-    for (int i = shader_entity_buf.size - 1; i >=0; i--) {
-        bs_ShaderEntity* entity = bs_bufferData(&shader_entity_buf, i);
-        if (entity->changed) {
-            last = i + 1;
-            entity->changed = false;
-            break;
-        }
-
-        entity->changed = false;
-    }
-
-    bs_updateShaderSpace(&entity_shader_space, shader_entity_data_buf.data, 0, shader_entity_buf.size);
-}
- 
-// Shader Spaces
-bs_Space bs_shaderSpace(bs_Buffer buffer, bs_U32 binding, bs_SpaceType type) {
-    bs_Space shader_space = { 0 };
-    bs_U32 total_size = buffer.size * buffer.unit_size;
-
-    if (type == BS_STD140 && total_size > 16384) {
-        bs_callErrorf(BS_ERROR_SHADER_SPACE_INCOMPATIBLE_FORMAT, 1, "Cannot use std140 with a size > 16384");
-        return shader_space;
-    }
-
-    shader_space.gl_type = (type == BS_STD430) ? GL_SHADER_STORAGE_BUFFER : GL_UNIFORM_BUFFER;
-    shader_space.bind_point = binding;
-    shader_space.buf = buffer;
-
-    glGenBuffers(1, &shader_space.accessor);
-    glBindBuffer(shader_space.gl_type, shader_space.accessor);
-    glBufferData(shader_space.gl_type, total_size, buffer.data, GL_STREAM_DRAW);
-    glBindBufferBase(shader_space.gl_type, shader_space.bind_point, shader_space.accessor);
-
-    return shader_space;
-}
-
-void bs_updateShaderSpace(bs_Space* shader_space, void* data, bs_U32 index, bs_U32 num_units) {
-    if (shader_space->accessor == 0) return;
-
-    if ((index + num_units) > shader_space->buf.size) {
-        bs_callErrorf(BS_ERROR_SHADER_SPACE_OUT_OF_RANGE, 1, "Attempted to access shader space out of range");
-        return;
-    }
-
-    if (index == shader_space->buf.size) return;
-
-    glBindBuffer(shader_space->gl_type, shader_space->accessor);
-    glBufferSubData(shader_space->gl_type, shader_space->buf.unit_size * index, shader_space->buf.unit_size * num_units, data);
-}
-
-void bs_fetchShaderSpace(bs_Space* shader_space, bs_U32 offset, bs_U32 size, void* out) {
-    glBindBuffer(shader_space->gl_type, shader_space->accessor);
-    glGetBufferSubData(shader_space->gl_type, offset, size, out);
-}
-
-bs_Shader bs_shader(bs_VertexShader* vs, bs_FragmentShader* fs, bs_GeometryShader* gs, const char* name) {
-    bs_Shader shader = { 0 };
-    if (!vs || !fs) return shader;
-
-    shader.vs = vs;
-    shader.id = glCreateProgram();
-    if (shader.id == 0) {
-        bs_callErrorf(BS_ERROR_SHADER_PROGRAM_CREATION, 2, "Failed while creating shader");
-        return shader;
-    }
-
-    glAttachShader(shader.id, vs->id);
-    glAttachShader(shader.id, fs->id);
-    if (gs != NULL) glAttachShader(shader.id, gs->id);
-
-    glLinkProgram(shader.id);
-    glUseProgram(shader.id);
-
-    // set sampler uniforms
-    GLint count;
-    glGetProgramiv(shader.id, GL_ACTIVE_UNIFORMS, &count);
-    for (int i = 0; i < count; i++) {
-        GLchar name[16];
-        GLsizei length;
-        GLint size;
-        GLenum type;
-
-        glGetActiveUniform(shader.id, (GLuint)i, 16, &length, &size, &type, name);
-        if (type == GL_SAMPLER_2D || type == GL_SAMPLER_2D_ARRAY) {
-            glUniform1i(glGetUniformLocation(shader.id, name), name[length - 1] - '0');
-        }
-    }
-
-    // cleanup
-    glDetachShader(shader.id, vs->id);
-    glDetachShader(shader.id, fs->id);
-    if (gs != NULL) glDetachShader(shader.id, gs->id);
-
-    // label
-    if (name != NULL) {
-        // glObjectLabel(GL_SHADER, shader.id, strlen(name), name);
-    }
-
-    return shader;
-}
-
-const char* bs_compileShader(GLuint* shader_id, int type, char* path) {
-    int len = 0;
-    const char* code = bs_loadFile(path, &len);
-    const char* repl = bs_replaceFirstSubstring(code, "#define BASILISK", global_shader);
-
-    if (repl != NULL) {
-        free(code);
-        code = repl;
-    }
-
-    // compile
-    *shader_id = glCreateShader(type);
-    glShaderSource(*shader_id, 1, &code, NULL);
-    glCompileShader(*shader_id);
-
-    GLint is_compiled = GL_FALSE;
-    glGetShaderiv(*shader_id, GL_COMPILE_STATUS, &is_compiled);
-
-    // handle error
-    if (!is_compiled) {
-        GLint max_length = 0;
-        glGetShaderiv(*shader_id, GL_INFO_LOG_LENGTH, &max_length);
-
-        char* log = bs_alloc(max_length);
-        glGetShaderInfoLog(*shader_id, max_length, &max_length, log);
-        glDeleteShader(*shader_id);
-
-        bs_callErrorf(BS_ERROR_SHADER_COMPILATION, 2, "Shader \"%s\" failed during compilation\n\nLog:\n%s\n", path, log);
-        free(log);
-        return NULL;
-    }
-
-    return code;
-}
-
-void bs_setVertexShaderAttributes(bs_VertexShader* vs, const char* vs_code) {
+void bs_setVertexAttributes(bs_VertexShader* vs, const char* code, int code_len) {
     struct {
-        char* name;
-        int value;
+        char *name;
+        bs_U32 name_len;
+        bs_U8 format;
+        bs_U8 value;
         uint8_t size;
     } attribs[] = {
-        { "in vec3 bs_Position" , BS_VAL_POSITION, sizeof(bs_vec3) },
-        { "in vec2 bs_Texture" , BS_VAL_TEXTURE, sizeof(bs_vec2) },
-        { "in vec4 bs_Color" , BS_VAL_COLOR, sizeof(bs_RGBA) },
-        { "in vec3 bs_Normal" , BS_VAL_NORMAL, sizeof(bs_vec3) },
-        { "in ivec4 bs_BoneId", BS_VAL_BONEID, sizeof(bs_ivec4) },
-        { "in vec4 bs_Weight" , BS_VAL_WEIGHT, sizeof(bs_vec4) },
-        { "in uint bs_Entity", BS_VAL_ENTITY, sizeof(bs_U32) },
-        { "in uint bs_Image", BS_VAL_IMAGE, sizeof(bs_U32) }
-    };
+        { "bs_Position", sizeof("bs_Position"), VK_FORMAT_R32G32B32_SFLOAT   , 1, sizeof(bs_vec3) },
+        { "bs_Texture" , sizeof("bs_Texture" ), VK_FORMAT_R32G32_SFLOAT      , 2, sizeof(bs_vec2) },
+        { "bs_Color"   , sizeof("bs_Color"   ), VK_FORMAT_R8G8B8A8_UNORM     , 4, sizeof(bs_RGBA) },
+        { "bs_Normal"  , sizeof("bs_Normal"  ), VK_FORMAT_R32G32B32_SFLOAT   , 8, sizeof(bs_vec3) },
+        { "bs_BoneId"  , sizeof("bs_BoneId"  ), VK_FORMAT_R32G32B32A32_SINT  , 16, sizeof(bs_ivec4) },
+        { "bs_Weight"  , sizeof("bs_Weight"  ), VK_FORMAT_R32G32B32A32_SFLOAT, 32, sizeof(bs_vec4) },
+        { "bs_Entity"  , sizeof("bs_Entity"  ), VK_FORMAT_R32_UINT           , 64, sizeof(bs_U32) },
+        { "bs_Image"   , sizeof("bs_Image"   ), VK_FORMAT_R32_UINT           , 128, sizeof(bs_U32) }
+    };   
 
-    int num = sizeof(bs_AttributeSizes); // Each element should be uint8_t so no need to divide
-    for (int i = 0; i < num; i++) {
-        uint8_t* attrib_sizes = (uint8_t*)&vs->attrib_sizes;
-        uint8_t* attrib_size = attrib_sizes + i;
+    for(int i = 0; i < BS_NUM_ATTRIBUTES; i++) {
+        uint8_t *attrib_sizes = (uint8_t *)&vs->attribs;
+        uint8_t *attrib_size = attrib_sizes + i;
         *attrib_size = 0;
 
-        if (strstr(vs_code, attribs[i].name)) {
+        if(bs_memmem(code, code_len, attribs[i].name, attribs[i].name_len)) {
             *attrib_size = attribs[i].size;
 
+            vs->attributes[i].size = attribs[i].size;
+            vs->attributes[i].format = attribs[i].format;
             vs->attrib_size_bytes += attribs[i].size;
             vs->attribs |= attribs[i].value;
             vs->attrib_count++;
@@ -233,49 +50,179 @@ void bs_setVertexShaderAttributes(bs_VertexShader* vs, const char* vs_code) {
     }
 }
 
+static VkShaderModule bs_shaderModule(const char* spirv, int len) {
+    VkShaderModuleCreateInfo shader_ci = { 0 };
+    shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_ci.codeSize = len - 1;
+    shader_ci.pCode = spirv;
+
+    VkShaderModule module;
+    BS_VK_ERR(vkCreateShaderModule(bs_vkDevice(), &shader_ci, NULL, &module), "Failed to create shader module");
+    return module;
+}
+
 bs_VertexShader bs_vertexShader(const char *path) {
     bs_VertexShader vs = { 0 };
-    const char* code = bs_compileShader(&vs.id, GL_VERTEX_SHADER, path);
-    bs_setVertexShaderAttributes(&vs, code);
-    free(code);
 
+    int len = 0;
+    const char* spirv = bs_loadFile(path, &len);
+    bs_setVertexAttributes(&vs, spirv, len);
+
+    vs.module = bs_shaderModule(spirv, len);
+
+    free(spirv);
     return vs;
 }
 
 bs_FragmentShader bs_fragmentShader(const char *path) {
     bs_FragmentShader fs = { 0 };
-    free(bs_compileShader(&fs.id, GL_FRAGMENT_SHADER, path));
 
+    int len = 0;
+    const char* spirv = bs_loadFile(path, &len);
+
+    fs.module = bs_shaderModule(spirv, len);
+
+    free(spirv);
     return fs;
 }
 
-bs_GeometryShader bs_geometryShader(const char *path) {
-    bs_GeometryShader gs = { 0 };
-    free(bs_compileShader(&gs.id, GL_GEOMETRY_SHADER, path));
-
-    return gs;
+inline VkPipelineShaderStageCreateInfo bs_shaderStage(VkShaderModule module, VkShaderStageFlags flags) {
+    VkPipelineShaderStageCreateInfo ci = { 0 };
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage = flags;
+    ci.module = module;
+    ci.pName = "main";
+    return ci;
 }
+VkVertexInputAttributeDescription attributes[BS_NUM_ATTRIBUTES] = { 0 };
 
-bs_ComputeShader bs_computeShader(const char* path) {
-    bs_ComputeShader cs = { 0 };
-    free(bs_compileShader(&cs.id, GL_COMPUTE_SHADER, path));
+bs_Pipeline bs_pipeline(bs_VertexShader* vs, bs_FragmentShader* fs) {
+    bs_Pipeline pipeline = { 0 };
+    pipeline.vs = vs;
 
-    cs.program = glCreateProgram();
-    glAttachShader(cs.program, cs.id);
-    glLinkProgram(cs.program);
+    // pipeline
+    VkDynamicState states[] = { 
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
 
-    return cs;
-}
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipelineLayoutCreateInfo pipeline_layout_i = { 0 };
+    pipeline_layout_i.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    BS_VK_ERR(vkCreatePipelineLayout(bs_vkDevice(), &pipeline_layout_i, NULL, &layout), "Failed to create pipeline layout");
 
-void bs_computeSize(bs_ComputeShader* cs, bs_Texture* output, bs_U32 x, bs_U32 y, bs_U32 z) {
-    glUseProgram(cs->program);
-    if (output != NULL) {
-        glBindImageTexture(0, output->id, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    VkPipelineDynamicStateCreateInfo dynamic_state_i = { 0 };
+    dynamic_state_i.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_i.dynamicStateCount = sizeof(states) / sizeof(VkDynamicState);
+    dynamic_state_i.pDynamicStates = states;
+
+    // add attributes
+    VkVertexInputBindingDescription input_binding = { 0 };
+    input_binding.binding = 0;
+    input_binding.stride = pipeline.vs->attrib_size_bytes;
+    input_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    bs_U32 offset = 0, location = 0;
+    for(int i = 0, j = 1; i < BS_NUM_ATTRIBUTES; i++, j *= 2) {
+        if ((pipeline.vs->attribs & j) != j) continue;
+
+        attributes[location].binding = 0;
+        attributes[location].location = location;
+        attributes[location].format = pipeline.vs->attributes[i].format;
+        attributes[location].offset = offset;
+        offset += pipeline.vs->attributes[i].size;
+        location++;
     }
-    glDispatchCompute(x, y, z);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-}
 
-void bs_compute(bs_ComputeShader* cs, bs_Texture* output) {
-    bs_computeSize(cs, output, output->w, output->h, 1);
+    VkPipelineVertexInputStateCreateInfo vertex_ci = { 0 };
+    vertex_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_ci.vertexBindingDescriptionCount = 1;
+    vertex_ci.vertexAttributeDescriptionCount = pipeline.vs->attrib_count; 
+    vertex_ci.pVertexBindingDescriptions = &input_binding; 
+    vertex_ci.pVertexAttributeDescriptions = attributes; 
+
+    VkPipelineInputAssemblyStateCreateInfo assembly_ci = { 0 };
+    assembly_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly_ci.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport viewport = { 0 };
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)bs_swapchainExtents().x;
+    viewport.height = (float)bs_swapchainExtents().y;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor = { 0 };
+    scissor.extent.width = bs_swapchainExtents().x;
+    scissor.extent.height = bs_swapchainExtents().y;
+
+    VkPipelineViewportStateCreateInfo viewport_state_ci = { 0 };
+    viewport_state_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state_ci.viewportCount = 1;
+    viewport_state_ci.pViewports = &viewport;
+    viewport_state_ci.scissorCount = 1;
+    viewport_state_ci.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer_ci = { 0 };
+    rasterizer_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer_ci.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer_ci.lineWidth = 1.0f;
+    rasterizer_ci.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer_ci.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling_ci = { 0 };
+    multisampling_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling_ci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling_ci.minSampleShading = 1.0f;
+
+    VkPipelineColorBlendAttachmentState blend_state = { 0 };
+    blend_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend_state.blendEnable = VK_TRUE;
+    blend_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_state.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_state.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo color_blending_ci = { 0 };
+    color_blending_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blending_ci.logicOp = VK_LOGIC_OP_COPY;
+    color_blending_ci.attachmentCount = 1;
+    color_blending_ci.pAttachments = &blend_state;
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = { 
+        bs_shaderStage(vs->module, VK_SHADER_STAGE_VERTEX_BIT), 
+        bs_shaderStage(fs->module, VK_SHADER_STAGE_FRAGMENT_BIT)
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_ci = { 0 };
+    pipeline_ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.stageCount = 2;
+    pipeline_ci.pStages = shader_stages;
+    pipeline_ci.pVertexInputState = &vertex_ci;
+    pipeline_ci.pInputAssemblyState = &assembly_ci;
+    pipeline_ci.pViewportState = &viewport_state_ci;
+    pipeline_ci.pRasterizationState = &rasterizer_ci;
+    pipeline_ci.pMultisampleState = &multisampling_ci;
+    pipeline_ci.pColorBlendState = &color_blending_ci;
+    pipeline_ci.pDynamicState = &dynamic_state_i;
+    pipeline_ci.layout = layout;
+    pipeline_ci.renderPass = bs_vkRenderPass();
+    pipeline_ci.subpass = 0;
+    pipeline_ci.basePipelineIndex = -1;
+
+    BS_VK_ERR(vkCreateGraphicsPipelines(bs_vkDevice(), VK_NULL_HANDLE, 1, &pipeline_ci, NULL, (VkPipeline*)&pipeline.state), "Failed to create graphics pipeline");
+
+    vkDestroyShaderModule(bs_vkDevice(), vs->module, NULL);
+    vkDestroyShaderModule(bs_vkDevice(), fs->module, NULL);
+
+    return pipeline;
 }

@@ -54,10 +54,10 @@ void bs_saveScreenshot(const char *file_name);
 // Batches
 bs_BatchPart bs_batchRange(bs_U32 offset, bs_U32 num);
 void bs_batchShader(bs_Batch* batch, bs_Shader *shader);
-void bs_batch(bs_Batch* out, bs_Shader* shader);
 void bs_attrib(const int type, unsigned int amount, size_t size_per_type, size_t attrib_size, bool normalized);
 void bs_attribI(const int type, unsigned int amount, size_t size_per_type, size_t attrib_size);
 
+bs_Batch bs_batch(bs_Pipeline* pipeline);
 bs_Batch* bs_getBatch();
 void bs_selectBatch(bs_Batch *batch);
 void bs_bindBatch(bs_Batch* batch, int vao_binding, int ebo_binding);
@@ -110,22 +110,9 @@ enum {
 #define BS_CULLING 0x0B44
 #define BS_DEPTH_CLAMP 0x864F
 
-#define BS_COLOR 0x8CE0
-
-
 #define GL_UBYTE GL_UNSIGNED_BYTE
 #define GL_UINT GL_UNSIGNED_INT
 #define GL_USHORT GL_UNSIGNED_SHORT
-
-// Batch Attribute Types
-#define BS_VAL_POSITION 1
-#define BS_VAL_TEXTURE 2
-#define BS_VAL_COLOR 4
-#define BS_VAL_NORMAL 8
-#define BS_VAL_BONEID 16
-#define BS_VAL_WEIGHT 32
-#define BS_VAL_ENTITY 64
-#define BS_VAL_IMAGE 128
 
 // Constants
 #define BS_BATCH_INCR_BY 256

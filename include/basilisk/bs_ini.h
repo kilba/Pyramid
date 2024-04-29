@@ -4,7 +4,20 @@
 #include <bs_types.h>
 #include <windows.h>
 
+#define BS_VK_ERR(call, msg) \
+    do { \
+        if ((call) != VK_SUCCESS) { \
+            bs_throwVk(msg, call); \
+        } \
+    } while(0)
+
+void* bs_vkDevice();
+void* bs_vkPhysicalDevice();
+void* bs_vkRenderPass();
+
+bs_ivec2 bs_swapchainExtents();
 void bs_throw(const char* message);
+void bs_throwVk(const char* message, bs_U32 result);
 void bs_ini(bs_U32 width, bs_U32 height, const char* name);
 void bs_run(void (*tick)());
 void bs_exit();

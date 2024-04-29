@@ -65,7 +65,8 @@ typedef struct bs_GeometryShader bs_GeometryShader;
 typedef struct bs_FragmentShader bs_FragmentShader;
 typedef struct bs_ComputeShader bs_ComputeShader;
 typedef struct bs_VertexShader bs_VertexShader;
-typedef struct bs_AttributeSizes bs_AttributeSizes;
+typedef struct bs_Attribute bs_Attribute;
+typedef struct bs_Pipeline bs_Pipeline;
 // Textures
 typedef struct bs_Texture bs_Texture;
 typedef struct bs_TextureFunc bs_TextureFunc;
@@ -128,6 +129,20 @@ typedef enum bs_ErrorCode bs_ErrorCode;
 typedef struct bs_PerformanceData bs_PerformanceData;
 
 typedef struct bs_aabb bs_aabb;
+
+typedef enum bs_AttributeType bs_AttributeType;
+enum bs_AttributeType {
+	BS_POSITION = 0,
+	BS_TEXTURE,
+	BS_COLOR,
+	BS_NORMAL,
+	BS_BONE_ID,
+	BS_WEIGHT,
+	BS_ENTITY,
+	BS_IMAGE,
+
+	BS_NUM_ATTRIBUTES
+};
 
 // Initialized by: 
 // bs_v2(float, float), 
@@ -460,30 +475,20 @@ struct bs_Image {
 };
 
 struct bs_Buffer {
-    bs_U32 size;
-
+    bs_U32 num_units;
     bs_U32 unit_size;
     bs_U32 capacity;
 
     bs_U32 max_units;
     bs_U32 increment;
 
-    bool realloc_ram;
-    bool realloc_vram;
-
-    bs_U32 type;
     bs_U8* data;
 };
 
-struct bs_AttributeSizes {
-    uint8_t position; 
-    uint8_t texture;
-    uint8_t color;
-    uint8_t normal;
-    uint8_t bone_id;
-    uint8_t weight;
-    uint8_t entity;
-    uint8_t image;
+struct bs_Pipeline {
+    bs_VertexShader* vs;
+
+    void* state;
 };
 
 struct bs_GeometryShader {
@@ -492,15 +497,23 @@ struct bs_GeometryShader {
 
 struct bs_FragmentShader {
     bs_U32 id;
+    void* module;
+};
+
+struct bs_Attribute {
+    bs_U8 format;
+    bs_U8 size;
 };
 
 struct bs_VertexShader {
     bs_U32 id;
 
-    bs_AttributeSizes attrib_sizes;
+    bs_Attribute attributes[BS_NUM_ATTRIBUTES];
     int attrib_size_bytes;
     int attrib_count;
     bs_U32 attribs;
+
+    void* module;
 };
 
 struct bs_ComputeShader {
@@ -553,7 +566,7 @@ struct bs_BatchPart {
 };
 
 struct bs_Batch {
-    bs_Shader shader;
+    bs_Pipeline pipeline;
 
     bool use_indices;
 
@@ -564,6 +577,8 @@ struct bs_Batch {
     bs_Buffer index_buf;
 
     bs_U32 VAO, VBO, EBO;
+
+    void* vbuffer;
 };
 
 struct bs_Quad {

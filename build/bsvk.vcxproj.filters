@@ -13,6 +13,12 @@
     <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\bs\bs_mem.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\bs\bs_core.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\henry\source\repos\Pyramid\src\bs\bs_shaders.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\henry\source\repos\Pyramid\CMakeLists.txt" />

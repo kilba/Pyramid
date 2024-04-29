@@ -18,6 +18,18 @@
         "vector": "c",
         "xstring": "c",
         "xutility": "c",
-        "xlocale": "c"
+        "xlocale": "c",
+        "basilisk.h": "c",
+        "stdarg.h": "c",
+        "bs_types.h": "c",
+        "bs_ttf.h": "c",
+        "string.h": "c",
+        "stdlib.h": "c",
+        "stdbool.h": "c",
+        "bs_textures.h": "c",
+        "bs_mem.h": "c",
+        "bs_shaders.h": "c",
+        "algorithm": "c",
+        "assert.h": "c"
     }
 }

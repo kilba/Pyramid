@@ -8,6 +8,24 @@
 #include <string.h>
 #include <stdint.h>
 
+void* bs_memmem(const void *haystack, bs_U32 haystack_len, 
+    const void * const needle, const bs_U32 needle_len)
+{
+    if (haystack == NULL) return NULL;
+    if (haystack_len == 0) return NULL;
+    if (needle == NULL) return NULL;
+    if (needle_len == 0) return NULL;
+    
+    for (const char *h = haystack;
+            haystack_len >= needle_len;
+            ++h, --haystack_len) {
+        if (!memcmp(h, needle, needle_len)) {
+            return h;
+        }
+    }
+    return NULL;
+}
+
 bs_JsonString bs_string(const char* str) {
     bs_JsonString string = { 0 };
     string.value = str;
@@ -43,7 +61,7 @@ void* bs_bufferData(bs_Buffer* buf, bs_U32 offset) {
 }
 
 void bs_bufferResizeCheck(bs_Buffer* buf, bs_U32 num_units) {
-    if ((buf->size + num_units) < buf->capacity) {
+    if ((buf->num_units + num_units) < buf->capacity) {
         return;
     }
 
@@ -53,49 +71,38 @@ void bs_bufferResizeCheck(bs_Buffer* buf, bs_U32 num_units) {
 
     bs_U32 prev_capacity = buf->capacity;
     buf->capacity += bs_max(num_units, buf->increment);
+    buf->data = realloc(buf->data, buf->capacity * buf->unit_size);
 
-    if (buf->realloc_ram) {
-        buf->data = realloc(buf->data, buf->capacity * buf->unit_size);
-
-        memset(bs_bufferData(buf, prev_capacity), 0, (buf->capacity - prev_capacity) * buf->unit_size);
-        //printf("REALLOCED : %p, %d (%d units)\n", buf, buf->num_units * buf->unit_size, buf->size);
-    }
-
-    if (buf->realloc_vram) {
-        //glBufferData(buf->type, buf->capacity * buf->unit_size, buf->data, GL_DYNAMIC_DRAW);
-    }
+    memset(bs_bufferData(buf, prev_capacity), 0, (buf->capacity - prev_capacity) * buf->unit_size);
 }
 
 void* bs_bufferAppend(bs_Buffer* buf, void* data) {
     bs_bufferResizeCheck(buf, 1); // TODO: is 1 here correct?
 
-    uint8_t* dest = bs_bufferData(buf, buf->size);
+    uint8_t* dest = bs_bufferData(buf, buf->num_units);
 
     if (data != NULL) {
         memcpy(dest, data, buf->unit_size);
     }
 
-    buf->size++;
+    buf->num_units++;
     return dest;
 }
 
 void bs_bufferAppendRange(bs_Buffer* buf, void* data, size_t num_units) {
     bs_bufferResizeCheck(buf, num_units);
 
-    uint8_t* dest = bs_bufferData(buf, buf->size);
+    uint8_t* dest = bs_bufferData(buf, buf->num_units);
     memcpy(dest, data, buf->unit_size * num_units);
 
-    buf->size += num_units;
+    buf->num_units += num_units;
 }
 
-bs_Buffer bs_buffer(bs_U32 type, bs_U32 unit_size, bs_U32 increment, bs_U32 pre_alloc, bs_U32 max_units) {
+bs_Buffer bs_buffer(bs_U32 unit_size, bs_U32 increment, bs_U32 pre_alloc, bs_U32 max_units) {
     bs_Buffer buf = { 0 };
 
     buf.unit_size = unit_size;
     buf.increment = increment;
-    buf.realloc_ram = true;
-    buf.realloc_vram = type != 0;
-    buf.type = type;
     buf.max_units = max_units;
 
     if (pre_alloc != 0) {
@@ -110,9 +117,8 @@ bs_Buffer bs_singleUnitBuffer(void* data, bs_U32 unit_size) {
 
     buf.data = data;
     buf.capacity = 1;
-    buf.size = 1;
+    buf.num_units = 1;
     buf.unit_size = unit_size;
-    buf.realloc_ram = true;
 
     return buf;
 }
