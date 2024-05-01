@@ -74,7 +74,10 @@ typedef struct bs_ImageShaderData bs_ImageShaderData;
 typedef struct bs_Image bs_Image;
 // Core
 typedef struct bs_RenderData bs_RenderData;
-typedef struct bs_Framebuf bs_Framebuf;
+typedef struct bs_Framebuffer bs_Framebuffer;
+typedef enum bs_AttachmentType bs_AttachmentType;
+typedef struct bs_Attachment bs_Attachment;
+typedef struct bs_Renderer bs_Renderer;
 typedef struct bs_Batch bs_Batch;
 typedef struct bs_BatchPart bs_BatchPart;
 typedef struct bs_Quad bs_Quad;
@@ -549,7 +552,7 @@ struct bs_Shader {
     bs_U32 id;
 };
 
-struct bs_Framebuf {
+struct bs_Framebuffer {
     bs_vec2 dim;
 
     unsigned int FBO, RBO;
@@ -558,6 +561,28 @@ struct bs_Framebuf {
     int culling;
 
     bs_Buffer buf;
+
+    int handle;
+};
+
+enum bs_AttachmentType {
+    BS_NO_ATTACHMENTS = 0,
+    BS_COLOR_ATTACHMENT,
+    BS_DEPTH_ATTACHMENT
+};
+
+struct bs_Attachment {
+    bs_AttachmentType type;
+};
+
+struct bs_Renderer {
+    bs_vec2 dim;
+    int handle;
+
+    bs_Attachment attachments[BS_MAX_ATTACHMENTS];
+    bs_U32 num_attachments;
+
+    void* render_pass;
 };
 
 struct bs_BatchPart {

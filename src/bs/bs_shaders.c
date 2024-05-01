@@ -96,7 +96,7 @@ inline VkPipelineShaderStageCreateInfo bs_shaderStage(VkShaderModule module, VkS
 }
 VkVertexInputAttributeDescription attributes[BS_NUM_ATTRIBUTES] = { 0 };
 
-bs_Pipeline bs_pipeline(bs_VertexShader* vs, bs_FragmentShader* fs) {
+bs_Pipeline bs_pipeline(bs_Renderer* renderer, bs_VertexShader* vs, bs_FragmentShader* fs) {
     bs_Pipeline pipeline = { 0 };
     pipeline.vs = vs;
 
@@ -215,7 +215,7 @@ bs_Pipeline bs_pipeline(bs_VertexShader* vs, bs_FragmentShader* fs) {
     pipeline_ci.pColorBlendState = &color_blending_ci;
     pipeline_ci.pDynamicState = &dynamic_state_i;
     pipeline_ci.layout = layout;
-    pipeline_ci.renderPass = bs_vkRenderPass();
+    pipeline_ci.renderPass = renderer->render_pass;
     pipeline_ci.subpass = 0;
     pipeline_ci.basePipelineIndex = -1;
 

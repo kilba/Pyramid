@@ -14,14 +14,7 @@
 #include <bs_mem.h>
 #include <bs_shaders.h>
 
-typedef struct {
-	bs_vec2 resolution;
-
-	double elapsed;
-	double delta_time;
-
-	bool key_states[BS_NUM_KEYS + 1];
-} bs_WindowFrameData;
+bs_HandleOffsets handle_offsets = { 0 };
 
 struct {
 	GLFWwindow* glfw;
@@ -29,8 +22,13 @@ struct {
     bool resized;
 } window = { 0 };
 
-bs_WindowFrameData frame = { 0 };
-bs_WindowFrameData last_frame = { 0 };
+bs_WindowFrame frame = { 0 };
+bs_WindowFrame last_frame = { 0 };
+
+
+bs_WindowFrame* bs_frameData() {
+    return &frame;
+}
 
 void bs_throw(const char* message) {
 	printf("%s\n", message);
@@ -57,13 +55,8 @@ VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 VkSemaphore* swapchain_semaphores = NULL, *render_semaphores = NULL;
 
 bs_ivec2 swapchain_extent = { 0, 0 };
-VkFramebuffer* swapchain_framebufs = NULL;
 
-VkRenderPass render_pass = VK_NULL_HANDLE;
 VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-VkAttachmentDescription color_attachment = { 0 };
-
-VkPipeline graphics_pipeline = VK_NULL_HANDLE;
 
 VkImageView* swapchain_img_views = NULL;
 VkImage* swapchain_imgs = NULL;
@@ -72,9 +65,10 @@ bs_U32 num_swapchain_imgs = 0;
 VkFormat swapchain_img_format;
 VkCommandPool command_pool;
 
-VkCommandBuffer* command_buffers = NULL;
-bs_Batch batch;
 #define BS_MAX_FRAMES_IN_FLIGHT 2
+
+bs_Buffer vk_handles = { 0 };
+bs_U32 current_swapchain_img = 0;
 
 typedef struct {
     uint32_t family_count;
@@ -86,8 +80,6 @@ typedef struct {
     bool present_family_is_valid;
 } QueueFamilyIndices;
 QueueFamilyIndices queue_family_indices;
-
-void* vk_handles = NULL;
 
 bool enable_validation_layers = true;
 const char *validation_layers[] = {
@@ -111,8 +103,8 @@ static void bs_glfwInputCallback(GLFWwindow* glfw, int key, int scancode, int ac
 	}
 }
 
-void* bs_vkRenderPass() {
-    return (void*)render_pass;
+bs_U32 bs_swapchainImage() {
+    return current_swapchain_img;
 }
 
 void* bs_vkDevice() {
@@ -131,16 +123,41 @@ void* bs_vkGraphicsQueue() {
     return (void*)graphics_queue;
 }
 
+void* bs_swapchainImgViews() {
+    return (void*)swapchain_img_views;
+}
+
+bs_U32 bs_numSwapchainImgs() {
+    return num_swapchain_imgs;
+}
+
 bs_ivec2 bs_swapchainExtents() {
     return swapchain_extent;
 }
 
+bs_HandleOffsets* bs_handleOffsets() {
+    return &handle_offsets;
+}
+
 void bs_addVkHandle(void* handle) {
+    bs_bufferAppend(&vk_handles, &handle);
+}
+
+void* bs_vkHandle(bs_U32 index) {
+    return *(void**)(vk_handles.data + index * sizeof(void*));
+}
+
+void** bs_vkHandleA(bs_U32 index) {
+    return (void*)(vk_handles.data + index * sizeof(void*));
+}
+
+bs_U32 bs_handleOffset() {
+    return vk_handles.num_units;
 }
 
 void bs_cleanupSwapChain() {
     for (size_t i = 0; i < num_swapchain_imgs; i++) {
-        vkDestroyFramebuffer(device, swapchain_framebufs[i], NULL);
+      //  vkDestroyFramebuffer(device, swapchain_framebufs[i], NULL);
     }
 
     for (size_t i = 0; i < num_swapchain_imgs; i++) {
@@ -153,10 +170,7 @@ void bs_cleanupSwapChain() {
 void bs_cleanup() {
     bs_cleanupSwapChain();
 
-    vkDestroyPipeline(device, graphics_pipeline, NULL);
     vkDestroyPipelineLayout(device, pipeline_layout, NULL);
-
-    vkDestroyRenderPass(device, render_pass, NULL);
 
     for (size_t i = 0; i < BS_MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(device, render_semaphores[i], NULL);
@@ -463,96 +477,6 @@ void bs_prepareImageViews() {
     }
 }
 
-void bs_prepareRenderPass() {
-    color_attachment.format = swapchain_img_format;
-    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    VkAttachmentReference color_attachment_ref = { 0 };
-    color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass = { 0 };
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &color_attachment_ref;
-
-    VkRenderPassCreateInfo render_pass_ci = { 0 };
-    render_pass_ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    render_pass_ci.attachmentCount = 1;
-    render_pass_ci.pAttachments = &color_attachment;
-    render_pass_ci.subpassCount = 1;
-    render_pass_ci.pSubpasses = &subpass;
-
-    BS_VK_ERR(vkCreateRenderPass(device, &render_pass_ci, NULL, &render_pass), "Failed to create render pass");
-}
-
-void bs_prepareFramebuffer() {
-    free(swapchain_framebufs);
-    swapchain_framebufs = malloc(num_swapchain_imgs * sizeof(VkFramebuffer));
-
-    for(int i = 0; i < num_swapchain_imgs; i++) {
-        VkFramebufferCreateInfo framebuf_ci = { 0 };
-        framebuf_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebuf_ci.renderPass = render_pass;
-        framebuf_ci.attachmentCount = 1;
-        framebuf_ci.pAttachments = swapchain_img_views + i;
-        framebuf_ci.width = swapchain_extent.x;
-        framebuf_ci.height = swapchain_extent.y;
-        framebuf_ci.layers = 1;
-
-        BS_VK_ERR(vkCreateFramebuffer(device, &framebuf_ci, NULL, swapchain_framebufs + i), "Failed to create framebuffer");
-    }
-}
-
-bs_U32 current_frame = 0;
-void bs_recordCommands(VkCommandBuffer cmd_buf, int img_idx) {
-    VkCommandBufferBeginInfo ci = { 0 };
-    ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    BS_VK_ERR(vkBeginCommandBuffer(cmd_buf, &ci), "Failed to begin recording");
-
-    VkRenderPassBeginInfo render_pass_i = { 0 };
-    render_pass_i.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    render_pass_i.renderPass = render_pass;
-    render_pass_i.framebuffer = swapchain_framebufs[img_idx];
-    render_pass_i.renderArea.extent.width = swapchain_extent.x;
-    render_pass_i.renderArea.extent.height = swapchain_extent.y;
-
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-    render_pass_i.clearValueCount = 1;
-    render_pass_i.pClearValues = &clearColor;
-    vkCmdBeginRenderPass(cmd_buf, &render_pass_i, VK_SUBPASS_CONTENTS_INLINE);
-
-    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
-    VkViewport viewport = { 0 };
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = swapchain_extent.x;
-    viewport.height = swapchain_extent.y;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
-
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &batch.vbuffer, offsets);
-    vkCmdBindIndexBuffer(cmd_buf, batch.ibuffer, 0, VK_INDEX_TYPE_UINT32);
-
-    VkRect2D scissor = { 0 };
-    scissor.extent.width = swapchain_extent.x;
-    scissor.extent.height = swapchain_extent.y;
-    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
-
-    //vkCmdDraw(cmd_buf, 3, 1, 0, 0);
-    vkCmdDrawIndexed(cmd_buf, batch.index_buf.num_units, 1, 0, 0, 0);
-
-    vkCmdEndRenderPass(cmd_buf);
-    BS_VK_ERR(vkEndCommandBuffer(cmd_buf), "Failed to record commands");
-}
-
 void bs_prepareCommands() {
     VkCommandPoolCreateInfo pool_ci = { 0 };
 	pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -561,14 +485,16 @@ void bs_prepareCommands() {
 
     BS_VK_ERR(vkCreateCommandPool(device, &pool_ci, NULL, &command_pool), "Failed to create a command pool");
 
-    command_buffers = malloc(BS_MAX_FRAMES_IN_FLIGHT * sizeof(VkCommandBuffer));
+    bs_bufferResizeCheck(&vk_handles, BS_MAX_FRAMES_IN_FLIGHT);
+    handle_offsets.command_buffers = bs_handleOffset();
 
     VkCommandBufferAllocateInfo buffer_ci = { 0 };
     buffer_ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     buffer_ci.commandPool = command_pool;
     buffer_ci.commandBufferCount = BS_MAX_FRAMES_IN_FLIGHT;
     buffer_ci.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, command_buffers), "Failed to allocate command buffers");
+    BS_VK_ERR(vkAllocateCommandBuffers(device, &buffer_ci, bs_vkHandleA(handle_offsets.command_buffers)), "Failed to allocate command buffers");
+    vk_handles.num_units += BS_MAX_FRAMES_IN_FLIGHT;
 }
 
 void bs_prepareSynchronization() {
@@ -604,14 +530,12 @@ void bs_recreateSwapchain() {
 
     bs_prepareSwapchain();
     bs_prepareImageViews();
-    bs_prepareFramebuffer();
 }
 
-void bs_tmpDraw() {
-    vkWaitForFences(device, 1, render_fences + current_frame, VK_TRUE, UINT64_MAX);
+void bs_render(void (*tick)()) {
+    vkWaitForFences(device, 1, render_fences + frame.swapchain_frame, VK_TRUE, UINT64_MAX);
 
-    uint32_t img_idx;
-    VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, swapchain_semaphores[current_frame], VK_NULL_HANDLE, &img_idx);
+    VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, swapchain_semaphores[frame.swapchain_frame], VK_NULL_HANDLE, &current_swapchain_img);
 
     if(result == VK_ERROR_OUT_OF_DATE_KHR) {
         bs_recreateSwapchain();
@@ -619,14 +543,23 @@ void bs_tmpDraw() {
     } else if(result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         bs_throw("Failed to acquire swapchain image");
     }
+    
+    VkCommandBuffer command_buffer = bs_vkHandle(handle_offsets.command_buffers + frame.swapchain_frame);
+    vkResetFences(device, 1, render_fences + frame.swapchain_frame);
+    vkResetCommandBuffer(command_buffer, 0);
 
-    vkResetFences(device, 1, render_fences + current_frame);
-    vkResetCommandBuffer(command_buffers[current_frame], 0);
-    bs_recordCommands(command_buffers[current_frame], img_idx);
+    VkCommandBufferBeginInfo ci = { 0 };
+    ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    BS_VK_ERR(vkBeginCommandBuffer(command_buffer, &ci), "Failed to begin recording");
 
-    VkSemaphore wait_semaphores[] = { swapchain_semaphores[current_frame] };
+    tick();
+
+    //vkCmdEndRenderPass(command_buffer);
+    BS_VK_ERR(vkEndCommandBuffer(command_buffer), "Failed to record commands");
+
+    VkSemaphore wait_semaphores[] = { swapchain_semaphores[frame.swapchain_frame] };
     VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSemaphore signal_semaphores[] = { render_semaphores[current_frame] };
+    VkSemaphore signal_semaphores[] = { render_semaphores[frame.swapchain_frame] };
 
     VkSubmitInfo submit_i = { 0 };
     submit_i.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -636,9 +569,9 @@ void bs_tmpDraw() {
     submit_i.signalSemaphoreCount = 1;
     submit_i.pWaitDstStageMask = wait_stages;
     submit_i.commandBufferCount = 1;
-    submit_i.pCommandBuffers = command_buffers + current_frame;
+    submit_i.pCommandBuffers = bs_vkHandleA(handle_offsets.command_buffers + frame.swapchain_frame);
 
-    BS_VK_ERR(vkQueueSubmit(graphics_queue, 1, &submit_i, render_fences[current_frame]), "Failed to submit queue");
+    BS_VK_ERR(vkQueueSubmit(graphics_queue, 1, &submit_i, render_fences[frame.swapchain_frame]), "Failed to submit queue");
     VkSubpassDependency dependency = { 0 };
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -656,7 +589,7 @@ void bs_tmpDraw() {
     present_i.pWaitSemaphores = signal_semaphores;
     present_i.swapchainCount = 1;
     present_i.pSwapchains = swapchains;
-    present_i.pImageIndices = &img_idx;
+    present_i.pImageIndices = &current_swapchain_img;
 
     result = vkQueuePresentKHR(present_queue, &present_i);
     if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || window.resized) {
@@ -666,7 +599,7 @@ void bs_tmpDraw() {
         bs_throw("Failed to acquire swapchain image");
     }
 
-    current_frame = (current_frame + 1) % BS_MAX_FRAMES_IN_FLIGHT;
+    frame.swapchain_frame = (frame.swapchain_frame + 1) % BS_MAX_FRAMES_IN_FLIGHT;
 }
 
 static void bs_glfwResizeCallback(GLFWwindow* window, int width, int height);
@@ -695,6 +628,8 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     glfwSetFramebufferSizeCallback(window.glfw, bs_glfwResizeCallback);
 	glfwSwapInterval(1);
 
+    vk_handles = bs_buffer(sizeof(void*), 16, 64, 0);
+
 	// vulkan
 	bs_prepareInstance();
 
@@ -704,21 +639,9 @@ void bs_ini(bs_U32 width, bs_U32 height, const char* name) {
     bs_prepareLogicalDevice();
     bs_prepareSwapchain();
     bs_prepareImageViews();
-    bs_prepareRenderPass();
-    bs_prepareFramebuffer();
     bs_prepareCommands();
-
-    bs_VertexShader vs = bs_vertexShader("tri_vs.spv");
-    bs_FragmentShader fs = bs_fragmentShader("tri_fs.spv");
-
-    bs_Pipeline pipeline = bs_pipeline(&vs, &fs);
-    graphics_pipeline = pipeline.state;
-    batch = bs_batch(&pipeline);
-    bs_selectBatch(&batch);
-    bs_pushTriangle(bs_v3(0.0, -0.5, 0.0), bs_v3(0.5, 0.5, 0.0), bs_v3(-0.5, 0.5, 0.0), (bs_RGBA)BS_RED, NULL);
-    bs_pushBatch();
-
     bs_prepareSynchronization();
+
 
     // vKDestroyPipelineLayout
     // vKDestroyRenderPass
@@ -734,9 +657,7 @@ void bs_run(void (*tick)()) {
 
 		glfwPollEvents();
 
-        bs_tmpDraw();		
-
-		tick();
+        bs_render(tick);		
 
 		glfwSwapBuffers(window.glfw);
 

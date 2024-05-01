@@ -7,12 +7,13 @@
 const char* bs_version();
 
 // Rendering
-void bs_pushIndex(int idx);
-void bs_pushIndices(int* idxs, int num_elems);
-void bs_pushIndexVa(int num_elems, ...);
+void bs_pushIndex(bs_Batch* batch, int idx);
+void bs_pushIndices(bs_Batch* batch, int* idxs, int num_elems);
+void bs_pushIndexVa(bs_Batch* batch, int num_elems, ...);
 
 void bs_pushAttrib(uint8_t **data_ptr, void *data, uint8_t size);
 void bs_pushVertex(
+    bs_Batch* batch,
     bs_vec3  position,
     bs_vec2  texture,
     bs_vec3  normal,
@@ -22,28 +23,27 @@ void bs_pushVertex(
     bs_U32   entity,
     bs_U32   image
 );
-bs_BatchPart bs_pushVertices(float* vertices, int num_vertices);
-bs_BatchPart bs_pushQuad(bs_Quad quad, bs_RGBA color, bs_Image* image, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushTriangle(bs_vec3 a, bs_vec3 b, bs_vec3 c, bs_RGBA color, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushLine(bs_vec3 start, bs_vec3 end, bs_RGBA color, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushPoint(bs_vec3 pos, bs_RGBA color, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushPrimitive(bs_Primitive* prim, int num_vertices, int num_indices, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushMesh(bs_Mesh *mesh, int num_vertices, int num_indices, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushModel(bs_Model *model, bs_ShaderEntity* shader_entity);
-bs_BatchPart bs_pushGlyph(bs_Font* font, bs_Glyph* glyph, bs_vec3 pos, bs_RGBA col, float scale);
-bs_BatchPart bs_pushText(bs_Font* font, bs_vec3 pos, bs_RGBA col, float scale, const char* text, va_list args);
+bs_BatchPart bs_pushVertices(bs_Batch* batch, float* vertices, int num_vertices);
+bs_BatchPart bs_pushQuad(bs_Batch* batch, bs_Quad quad, bs_RGBA color, bs_Image* image, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushTriangle(bs_Batch* batch, bs_vec3 a, bs_vec3 b, bs_vec3 c, bs_RGBA color, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushLine(bs_Batch* batch, bs_vec3 start, bs_vec3 end, bs_RGBA color, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushPoint(bs_Batch* batch, bs_vec3 pos, bs_RGBA color, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushPrimitive(bs_Batch* batch, bs_Primitive* prim, int num_vertices, int num_indices, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushMesh(bs_Batch* batch, bs_Mesh *mesh, int num_vertices, int num_indices, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushModel(bs_Batch* batch, bs_Model *model, bs_ShaderEntity* shader_entity);
+bs_BatchPart bs_pushGlyph(bs_Batch* batch, bs_Font* font, bs_Glyph* glyph, bs_vec3 pos, bs_RGBA col, float scale);
+bs_BatchPart bs_pushText(bs_Batch* batch, bs_Font* font, bs_vec3 pos, bs_RGBA col, float scale, const char* text, va_list args);
 
 // Framebufs
-void bs_framebuf(bs_Framebuf* out, bs_vec2 dim);
 void bs_setBuf(bs_Texture* buf, int type, int idx);
-void bs_attach(void (*tex_func)(bs_Texture* texture, bs_vec2 dim, bs_U8* data));
 void bs_attachExisting(bs_Texture* buf, int type);
-void bs_attachFromFramebuf(bs_Framebuf *framebuf, int buf);
+void bs_attachFromFramebuf(bs_Framebuffer *framebuf, int buf);
 void bs_attachRenderbuf();
 void bs_setDrawBufs(int n, ...);
-void bs_selectFramebuf(bs_Framebuf *framebuf);
+void bs_selectFramebuf(bs_Framebuffer *framebuf);
 void bs_pushFramebuf();
-bs_Texture* bs_framebufTexture(bs_Framebuf* framebuf, bs_U32 binding);
+bs_Texture* bs_framebufTexture(bs_Framebuffer* framebuf, bs_U32 binding);
+bs_Framebuffer bs_framebuffer(bs_U32 width, bs_U32 height);
 
 bs_U16* bs_u16FramebufData(bs_U32 x, bs_U32 y, bs_U32 w, bs_U32 h, bs_U32 buf);
 bs_U32* bs_uFramebufData(bs_U32 x, bs_U32 y, bs_U32 w, bs_U32 h, bs_U32 buf);
@@ -53,6 +53,7 @@ void bs_saveScreenshot(const char *file_name);
 
 // Batches
 bs_BatchPart bs_batchRange(bs_U32 offset, bs_U32 num);
+int bs_batchSize(bs_Batch* batch);
 void bs_batchShader(bs_Batch* batch, bs_Shader *shader);
 void bs_attrib(const int type, unsigned int amount, size_t size_per_type, size_t attrib_size, bool normalized);
 void bs_attribI(const int type, unsigned int amount, size_t size_per_type, size_t attrib_size);
@@ -61,7 +62,8 @@ bs_Batch bs_batch(bs_Pipeline* pipeline);
 bs_Batch* bs_getBatch();
 void bs_selectBatch(bs_Batch *batch);
 void bs_bindBatch(bs_Batch* batch, int vao_binding, int ebo_binding);
-void bs_pushBatch();
+void bs_pushBatch(bs_Batch* batch);
+void bs_renderBatch(bs_Batch* batch, bs_BatchPart range, bs_RenderType render_type);
 void bs_render(bs_BatchPart range, bs_RenderType render_type);
 void bs_renderTriangles(bs_BatchPart range);
 void bs_renderLines(bs_BatchPart range);
@@ -70,8 +72,14 @@ void bs_renderBatchAsText(bs_BatchPart range, bs_Font* font);
 void bs_freeBatchData();
 void bs_clearBatch();
 
-int bs_batchSize();
 void bs_batchResizeCheck(int index_count, int vertex_count);
+
+bs_Renderer bs_renderer(bs_U32 width, bs_U32 height);
+void bs_pushRenderer(bs_Renderer* renderer);
+void bs_attach(bs_Renderer* renderer, bs_AttachmentType type);
+void bs_pushAttachments(bs_Renderer* renderer);
+void bs_selectRenderer(bs_Renderer* renderer);
+void bs_commitRenderer(bs_Renderer* renderer);
 
 // Matrices / Cameras
 bs_Texture* bs_defTexture();

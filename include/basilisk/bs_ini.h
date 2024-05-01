@@ -3,6 +3,7 @@
 
 #include <bs_types.h>
 #include <windows.h>
+#define BS_NUM_KEYS 348
 
 #define BS_VK_ERR(call, msg) \
     do { \
@@ -11,11 +12,33 @@
         } \
     } while(0)
 
+typedef struct {
+    bs_U32 command_buffers;
+} bs_HandleOffsets;
+
+typedef struct {
+	bs_vec2 resolution;
+
+	double elapsed;
+	double delta_time;
+
+    bs_U32 swapchain_frame;
+    bool key_states[BS_NUM_KEYS + 1];
+} bs_WindowFrame;
+
+bs_HandleOffsets* bs_handleOffsets();
+bs_WindowFrame* bs_frameData();
 void* bs_vkDevice();
 void* bs_vkPhysicalDevice();
 void* bs_vkRenderPass();
 void* bs_vkCmdPool();
 void* bs_vkGraphicsQueue();
+bs_U32 bs_handleOffset();
+void bs_addVkHandle(void* handle);
+void* bs_swapchainImgViews();
+bs_U32 bs_numSwapchainImgs();
+void* bs_vkHandle(bs_U32 index);
+bs_U32 bs_swapchainImage();
 
 bs_ivec2 bs_swapchainExtents();
 void bs_throw(const char* message);
@@ -156,6 +179,5 @@ double bs_queryPerformanceResult(bs_PerformanceData data);
 #define 	BS_KEY_RIGHT_ALT   346
 #define 	BS_KEY_RIGHT_SUPER   347
 #define 	BS_KEY_CTRL   348
-#define 	BS_NUM_KEYS   BS_KEY_CTRL
 
 #endif // BS_WND_H

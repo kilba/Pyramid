@@ -9,7 +9,7 @@ extern "C"{
 
 #include <bs_cmds.h>
 #include <bs_core.h>
-#include <bs_wnd.h>
+#include <bs_ini.h>
 #include <bs_math.h>
 #include <bs_mem.h>
 #include <bs_models.h>

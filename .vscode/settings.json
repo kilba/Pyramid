@@ -30,6 +30,18 @@
         "bs_mem.h": "c",
         "bs_shaders.h": "c",
         "algorithm": "c",
-        "assert.h": "c"
-    }
+        "assert.h": "c",
+        "charconv": "c",
+        "exception": "c",
+        "memory": "c",
+        "thread": "c",
+        "utility": "c",
+        "xtr1common": "c",
+        "xmemory": "c",
+        "compare": "c",
+        "ratio": "c",
+        "tuple": "c",
+        "bs_models.h": "c"
+    },
+    "cmake.configureOnOpen": true
 }

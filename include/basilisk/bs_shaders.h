@@ -22,10 +22,11 @@ enum bs_SpaceType {
 };
 
 /// @brief Creates a pipeline from a vertex shader and fragment shader.
-/// @param vs Vertex shader pointer
-/// @param fs Fragment shader pointer
+/// @param renderer Pointer to a rendererer created with bs_renderer()
+/// @param vs Pointer to a vertex shader created with bs_vertexShader()
+/// @param fs Pointer to a fragment shader created with bs_fragmentShader()
 /// @return 
-bs_Pipeline bs_pipeline(bs_VertexShader* vs, bs_FragmentShader* fs);
+bs_Pipeline bs_pipeline(bs_Renderer* renderer, bs_VertexShader* vs, bs_FragmentShader* fs);
 
 /// @brief Creates a SPIR-V vertex shader.
 /// @param path Path to the compiled .spv
